@@ -43,7 +43,7 @@ async def main():
 
     storage = PostgresStorage(pool=pool)
 
-    container.instance(DBService(pool=pool))
+    container.instance(DBService(pool=pool, bot_id="fvb"))
 
     container.instance(GeminiService(api_key=config["GEMINI_API_KEY"]))
 

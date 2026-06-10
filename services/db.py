@@ -6,19 +6,21 @@ from asyncpg import Pool
 class DBService:
     """DB service"""
 
-    def __init__(self, pool: Pool):
+    def __init__(self, pool: Pool, bot_id: str):
         self.pool = pool
+        self.bot_id = bot_id
 
     # ─────────────────────────────────────────────
-    # USER SETTINGS (per user × chat)
+    # USER SETTINGS (per user × chat × bot)
     # ─────────────────────────────────────────────
 
     async def get_settings(self, user_id: int, chat_id: int):
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT data FROM user_settings WHERE chat_id=$1 AND user_id=$2",
+                "SELECT data FROM user_settings WHERE chat_id=$1 AND user_id=$2 AND bot_id=$3",
                 chat_id,
                 user_id,
+                self.bot_id,
             )
             return json.loads(row["data"]) if row else {}
 
@@ -32,13 +34,14 @@ class DBService:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO user_settings (chat_id, user_id, data)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (chat_id, user_id)
-                DO UPDATE SET data = $3
+                INSERT INTO user_settings (chat_id, user_id, bot_id, data)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (chat_id, user_id, bot_id)
+                DO UPDATE SET data = $4
                 """,
                 chat_id,
                 user_id,
+                self.bot_id,
                 json.dumps(data),
             )
 
