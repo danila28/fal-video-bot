@@ -8,7 +8,6 @@ from aiogram.types import (
 
 SETTINGS_BUTTON_TEXT = "⚙️ Settings"
 GENERATE_BUTTON_TEXT = "🎬 Generate video"
-HISTORY_BUTTON_TEXT  = "📼 History"
 
 
 def get_persistent_keyboard():
@@ -16,7 +15,7 @@ def get_persistent_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=GENERATE_BUTTON_TEXT)],
-            [KeyboardButton(text=SETTINGS_BUTTON_TEXT), KeyboardButton(text=HISTORY_BUTTON_TEXT)],
+            [KeyboardButton(text=SETTINGS_BUTTON_TEXT)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -24,7 +23,6 @@ def get_persistent_keyboard():
 
 
 def get_prompt_keyboard():
-    """Keyboard for confirming prompts"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Continue", callback_data="prompt_ok")],
@@ -34,7 +32,6 @@ def get_prompt_keyboard():
 
 
 def get_image_keyboard():
-    """Keyboard for image actions"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Continue", callback_data="image_ok")],
@@ -45,7 +42,6 @@ def get_image_keyboard():
 
 
 def get_video_keyboard(subtitles_on: bool = True):
-    """Keyboard for video actions. Includes per-video subtitle toggle."""
     subs_label = "🔤 Subtitles: ON" if subtitles_on else "🔤 Subtitles: OFF"
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -53,17 +49,11 @@ def get_video_keyboard(subtitles_on: bool = True):
             [InlineKeyboardButton(text="Change prompt", callback_data="video_prompt_change")],
             [InlineKeyboardButton(text="Regenerate", callback_data="video_regenerate")],
             [InlineKeyboardButton(text=subs_label, callback_data="video_subtitles_toggle")],
-            [InlineKeyboardButton(text="🎞 Send raw video", callback_data="video_send_raw")],
         ]
     )
 
 
 def get_accounts_keyboard(accounts: list[dict]):
-    """Keyboard for managing per-chat accounts.
-
-    Each account gets its own row with a Remove button.
-    A permanent 'Add account' row sits at the bottom.
-    """
     rows = []
     for acc in accounts:
         platform_icon = "▶️" if acc["platform"] == "youtube" else "🎵"
@@ -83,7 +73,6 @@ def get_accounts_keyboard(accounts: list[dict]):
 
 
 def get_duration_keyboard(current: int = 15):
-    """Keyboard for selecting target video duration in settings."""
     rows = []
     for d in [15, 30, 45, 60]:
         mark = "✅ " if d == current else ""
@@ -95,7 +84,6 @@ def get_duration_keyboard(current: int = 15):
 
 
 def get_video_prompt_keyboard():
-    """Keyboard shown after the video prompt is generated — per-part controls."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="▶️ Generate video", callback_data="vp_ok")],
@@ -112,7 +100,6 @@ def get_video_prompt_keyboard():
 
 
 def get_publish_time_keyboard():
-    """Keyboard shown after the user enters the video title."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📤 Publish now", callback_data="publish_time:now")],
@@ -122,7 +109,6 @@ def get_publish_time_keyboard():
 
 
 def get_publish_keyboard():
-    """Keyboard for publish"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="publish", callback_data="publish")],
@@ -132,10 +118,8 @@ def get_publish_keyboard():
 
 
 def get_resolution_keyboard(current: str = "720p"):
-    """Keyboard for selecting video resolution (Seedance only — Kling/OmniHuman
-    output is fixed by the model)."""
     options = [
-        ("720p", "720p — default, fastest"),
+        ("720p",  "720p — default, fastest"),
         ("1080p", "1080p — Seedance only, slower"),
     ]
     rows = []
@@ -148,7 +132,6 @@ def get_resolution_keyboard(current: str = "720p"):
 
 
 def get_speed_keyboard(current: float = 1.0):
-    """Keyboard for selecting video playback speed."""
     options = [1.0, 1.15, 1.3, 1.5]
     rows = []
     for s in options:
@@ -158,28 +141,8 @@ def get_speed_keyboard(current: float = 1.0):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_settings_keyboard(
-    subtitles_default_on: bool = True,
-    grade_on: bool = False,
-    target_duration: int = 15,
-    utc_offset: int = 0,
-    sfx_on: bool = False,
-    video_speed: float = 1.0,
-    video_resolution: str = "720p",
-):
-    """Keyboard for /settings menu. Reflects current toggles."""
-    subs_label = (
-        "🔤 Subtitles default: ON"
-        if subtitles_default_on
-        else "🔤 Subtitles default: OFF"
-    )
-    grade_label = "🎨 Colour grade: ON" if grade_on else "🎨 Colour grade: OFF"
-    sfx_label   = "🔊 SFX / ASMR: ON"  if sfx_on  else "🔊 SFX / ASMR: OFF"
-    spd_label   = f"⚡ Speed: {video_speed:.2f}×" if video_speed != 1.0 else "⚡ Speed: 1.0× (normal)"
-    res_label   = f"📐 Resolution: {video_resolution}"
-    dur_label = f"⏱ Duration: {target_duration}s"
-    tz_sign = "+" if utc_offset >= 0 else ""
-    tz_label = f"🕐 Timezone: UTC{tz_sign}{utc_offset}"
+def get_settings_keyboard():
+    """Main settings page — model selection and system prompts."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -187,8 +150,7 @@ def get_settings_keyboard(
                 InlineKeyboardButton(text="🖼 Image model", callback_data="settings:image_model"),
             ],
             [
-                InlineKeyboardButton(text="🎬 Video model",  callback_data="settings:video_model"),
-                InlineKeyboardButton(text="📋 Show settings", callback_data="settings:show"),
+                InlineKeyboardButton(text="🎬 Video model", callback_data="settings:video_model"),
             ],
             [
                 InlineKeyboardButton(text="📝 Plot prompt",  callback_data="settings:plot_prompt"),
@@ -198,10 +160,32 @@ def get_settings_keyboard(
                 InlineKeyboardButton(text="🎬 Video prompt", callback_data="settings:video_prompt"),
             ],
             [
-                InlineKeyboardButton(text=subs_label, callback_data="settings:subtitles_toggle"),
+                InlineKeyboardButton(text="⚙️ More settings", callback_data="settings:advanced"),
             ],
+        ]
+    )
+
+
+def get_advanced_settings_keyboard(
+    subtitles_default_on: bool = True,
+    grade_on: bool = False,
+    target_duration: int = 15,
+    utc_offset: int = 0,
+    sfx_on: bool = False,
+    video_speed: float = 1.0,
+    video_resolution: str = "720p",
+):
+    """Advanced settings sub-page — toggles, quality, publishing."""
+    subs_label  = "🔤 Subtitles: ON"  if subtitles_default_on else "🔤 Subtitles: OFF"
+    grade_label = "🎨 Grade: ON"      if grade_on             else "🎨 Grade: OFF"
+    sfx_label   = "🔊 SFX: ON"       if sfx_on               else "🔊 SFX: OFF"
+    spd_label   = f"⚡ {video_speed:.2f}×" if video_speed != 1.0 else "⚡ Speed: normal"
+    tz_sign     = "+" if utc_offset >= 0 else ""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=subs_label, callback_data="settings:subtitles_toggle")],
             [
-                InlineKeyboardButton(text=grade_label, callback_data="settings:grade_toggle"),
+                InlineKeyboardButton(text=grade_label,       callback_data="settings:grade_toggle"),
                 InlineKeyboardButton(text="🎚 Grade params", callback_data="settings:grade_params"),
             ],
             [
@@ -209,22 +193,23 @@ def get_settings_keyboard(
                 InlineKeyboardButton(text=spd_label, callback_data="settings:speed"),
             ],
             [
-                InlineKeyboardButton(text=res_label, callback_data="settings:resolution"),
+                InlineKeyboardButton(text=f"📐 {video_resolution}", callback_data="settings:resolution"),
+                InlineKeyboardButton(text=f"⏱ {target_duration}s", callback_data="settings:duration"),
             ],
             [
                 InlineKeyboardButton(text="🚫 Negative prompt", callback_data="settings:negative_prompt"),
-                InlineKeyboardButton(text="🎙 Voice", callback_data="settings:voice_id"),
+                InlineKeyboardButton(text="🎙 Voice",            callback_data="settings:voice_id"),
             ],
             [
-                InlineKeyboardButton(text="🎵 Background music", callback_data="settings:music_path"),
+                InlineKeyboardButton(text="🎵 Music",               callback_data="settings:music_path"),
+                InlineKeyboardButton(text=f"🕐 UTC{tz_sign}{utc_offset}", callback_data="settings:timezone"),
             ],
             [
-                InlineKeyboardButton(text=dur_label, callback_data="settings:duration"),
-                InlineKeyboardButton(text=tz_label,  callback_data="settings:timezone"),
+                InlineKeyboardButton(text="📤 Accounts",      callback_data="settings:accounts"),
+                InlineKeyboardButton(text="📋 Show settings", callback_data="settings:show"),
             ],
             [
-                InlineKeyboardButton(text="📤 Accounts", callback_data="settings:accounts"),
-                InlineKeyboardButton(text="🪪 My ID",    callback_data="settings:my_id"),
+                InlineKeyboardButton(text="← Back", callback_data="settings:back"),
             ],
         ]
     )

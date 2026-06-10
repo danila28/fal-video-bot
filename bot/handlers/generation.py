@@ -33,7 +33,6 @@ from utils.consts import allowed_users, generate_hashtags_prompt
 from utils.tg import send_long_message
 from bot.handlers.common import (
     DEFAULT_TARGET_DURATION,
-    LIP_SYNC_MODELS,
     _build_image_prompt,
     _build_video_prompt,
     _format_video_prompt_message,
@@ -492,19 +491,6 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
     await state.set_state(GenerationState.CONFIRM_VIDEO)
 
 
-@router.callback_query(GenerationState.CONFIRM_VIDEO, lambda c: c.data == "video_send_raw", IsAllowed(allowed_users))
-async def handle_video_send_raw(callback: CallbackQuery, state: FSMContext):
-    """Send the raw model output (no grade, no audio mix, no subs) for comparison."""
-    await callback.answer()
-    data = await state.get_data()
-    raw_path = data.get("video_path_raw")
-    if not raw_path or not os.path.exists(raw_path):
-        await callback.message.answer("❌ Raw video not found (may have been cleaned up).")
-        return
-    await callback.message.answer("🎞 Raw model output:")
-    await callback.message.answer_video(FSInputFile(raw_path), caption="raw")
-
-
 @router.callback_query(GenerationState.CONFIRM_VIDEO, lambda c: c.data == "video_ok", IsAllowed(allowed_users))
 async def handle_video_ok(callback: CallbackQuery, state: FSMContext):
     if await _is_generating(state):
@@ -542,29 +528,6 @@ async def handle_video_regenerate(callback: CallbackQuery, state: FSMContext):
         await _run_video_gen(callback, state, gen_type="regen")
     finally:
         await state.update_data(generation_in_progress=False)
-
-
-@router.callback_query(GenerationState.CONFIRM_VIDEO, lambda c: c.data == "video_extension", IsAllowed(allowed_users))
-async def handle_video_extension(callback: CallbackQuery, state: FSMContext):
-    """Add 7 seconds — only supported for Seedance via additional clip."""
-    if await _is_generating(state):
-        await callback.answer("Already generating — please wait.", show_alert=False)
-        return
-    await callback.answer()
-    db = container.inject(DBService)
-    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
-    model = (settings.get("video_model") or "").lower()
-    if model in LIP_SYNC_MODELS:
-        await callback.message.answer(
-            "ℹ️ Adding extra seconds is not supported for lip-sync models "
-            "(Kling / OmniHuman). Use a longer voiceover instead — duration "
-            "is driven by the TTS audio length."
-        )
-        return
-    await callback.message.answer(
-        "ℹ️ Video extension for Seedance is not yet wired up — regenerate with "
-        "a longer target duration in ⚙️ Settings → ⏱ Duration instead."
-    )
 
 
 @router.callback_query(GenerationState.CONFIRM_VIDEO, lambda c: c.data == "video_subtitles_toggle", IsAllowed(allowed_users))

@@ -5,7 +5,6 @@ import json
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     InlineKeyboardButton,
@@ -16,12 +15,12 @@ from aiogram.types import (
 from bot.guard import IsAllowed
 from bot.keyboards import (
     get_accounts_keyboard,
+    get_advanced_settings_keyboard,
     get_duration_keyboard,
     get_resolution_keyboard,
     get_settings_keyboard,
     get_speed_keyboard,
     SETTINGS_BUTTON_TEXT,
-    HISTORY_BUTTON_TEXT,
 )
 from bot.states import GenerationState
 from services.db import DBService
@@ -35,53 +34,42 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
-# BASIC SETTINGS COMMANDS
+# SETTINGS ENTRY
 # ─────────────────────────────────────────────
 
 @router.message(F.text == SETTINGS_BUTTON_TEXT, IsAllowed(allowed_users))
 async def handle_settings_button(message: Message, state: FSMContext):
-    """Reply-keyboard button — opens inline settings menu in any state."""
     await state.clear()
+    await message.answer("⚙️ Settings", reply_markup=get_settings_keyboard())
+
+
+@router.callback_query(lambda c: c.data == "settings:back", IsAllowed(allowed_users))
+async def settings_back(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        await callback.message.edit_text("⚙️ Settings", reply_markup=get_settings_keyboard())
+    except Exception:
+        await callback.message.answer("⚙️ Settings", reply_markup=get_settings_keyboard())
+
+
+@router.callback_query(lambda c: c.data == "settings:advanced", IsAllowed(allowed_users))
+async def settings_advanced(callback: CallbackQuery):
+    await callback.answer()
     db = container.inject(DBService)
-    settings = await db.get_settings(message.from_user.id, message.chat.id)
-    subs_on = settings.get("subtitles_enabled", True)
-    grade_on = settings.get("colour_grade_enabled", False)
-    sfx_on = settings.get("sfx_enabled", False)
-    speed = float(settings.get("video_speed", 1.0))
-    res = settings.get("video_resolution", "720p")
-    dur = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    tz = settings.get("utc_offset_hours", 0)
-    await message.answer("⚙️ Settings", reply_markup=get_settings_keyboard(subs_on, grade_on, dur, tz, sfx_on, speed, res))
-
-
-@router.message(Command("id"))
-async def handle_id(message: Message):
-    await message.answer(f"Your Telegram ID: {message.from_user.id}")
-
-
-@router.message(F.text == HISTORY_BUTTON_TEXT, IsAllowed(allowed_users))
-@router.message(Command("history"), IsAllowed(allowed_users))
-async def handle_history(message: Message):
-    """Show the last 10 generated videos for this chat (re-sent from Telegram CDN)."""
-    db = container.inject(DBService)
-    rows = await db.get_video_history(message.from_user.id, message.chat.id, limit=10)
-    if not rows:
-        await message.answer("📭 No videos in history yet.")
-        return
-
-    await message.answer(f"📼 Last {len(rows)} video(s):")
-    for row in rows:
-        gen_label = {"initial": "🎬", "regen": "🔄", "extend": "➕"}.get(row["gen_type"], "🎬")
-        ts = row["created_at"].strftime("%Y-%m-%d %H:%M")
-        caption = f"{gen_label} <b>{html.escape(row['title'] or '—')}</b>\n<i>{ts}</i>"
-        try:
-            await message.answer_video(row["file_id"], caption=caption, parse_mode="HTML")
-        except Exception as e:
-            logger.warning(f"History re-send failed for file_id={row['file_id']}: {e}")
-            await message.answer(
-                f"{gen_label} {html.escape(row['title'] or '—')} — <i>video unavailable</i>",
-                parse_mode="HTML",
-            )
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    kb = get_advanced_settings_keyboard(
+        subtitles_default_on=s.get("subtitles_enabled", True),
+        grade_on=s.get("colour_grade_enabled", False),
+        target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
+        utc_offset=s.get("utc_offset_hours", 0),
+        sfx_on=s.get("sfx_enabled", False),
+        video_speed=float(s.get("video_speed", 1.0)),
+        video_resolution=s.get("video_resolution", "720p"),
+    )
+    try:
+        await callback.message.edit_text("⚙️ More settings", reply_markup=kb)
+    except Exception:
+        await callback.message.answer("⚙️ More settings", reply_markup=kb)
 
 
 # ─────────────────────────────────────────────
@@ -106,35 +94,28 @@ async def settings_show(callback: CallbackQuery):
         await callback.message.answer(f"Error showing settings: {e}")
 
 
-@router.callback_query(lambda c: c.data == "settings:my_id", IsAllowed(allowed_users))
-async def settings_my_id(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.answer(f"Your Telegram ID: {callback.from_user.id}")
-
-
 @router.callback_query(lambda c: c.data == "settings:subtitles_toggle", IsAllowed(allowed_users))
 async def settings_subtitles_toggle(callback: CallbackQuery):
     db = container.inject(DBService)
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
-    settings = await db.get_settings(user_id, chat_id)
-    new_value = not settings.get("subtitles_enabled", True)
+    s = await db.get_settings(user_id, chat_id)
+    new_value = not s.get("subtitles_enabled", True)
     await db.update_settings(user_id, chat_id, {"subtitles_enabled": new_value})
-    grade_on = settings.get("colour_grade_enabled", False)
-    sfx_on = settings.get("sfx_enabled", False)
-    speed = float(settings.get("video_speed", 1.0))
-    res = settings.get("video_resolution", "720p")
-    dur = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    tz = settings.get("utc_offset_hours", 0)
-    await callback.answer(f"Subtitles default: {'ON' if new_value else 'OFF'}")
+    kb = get_advanced_settings_keyboard(
+        subtitles_default_on=new_value,
+        grade_on=s.get("colour_grade_enabled", False),
+        target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
+        utc_offset=s.get("utc_offset_hours", 0),
+        sfx_on=s.get("sfx_enabled", False),
+        video_speed=float(s.get("video_speed", 1.0)),
+        video_resolution=s.get("video_resolution", "720p"),
+    )
+    await callback.answer(f"Subtitles: {'ON' if new_value else 'OFF'}")
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup=get_settings_keyboard(new_value, grade_on, dur, tz, sfx_on, speed, res)
-        )
+        await callback.message.edit_reply_markup(reply_markup=kb)
     except Exception:
-        await callback.message.answer(
-            "⚙️ Settings", reply_markup=get_settings_keyboard(new_value, grade_on, dur, tz, sfx_on, speed, res)
-        )
+        await callback.message.answer("⚙️ More settings", reply_markup=kb)
 
 
 @router.callback_query(lambda c: c.data == "settings:grade_toggle", IsAllowed(allowed_users))
@@ -142,24 +123,23 @@ async def settings_grade_toggle(callback: CallbackQuery):
     db = container.inject(DBService)
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
-    settings = await db.get_settings(user_id, chat_id)
-    new_value = not settings.get("colour_grade_enabled", False)
+    s = await db.get_settings(user_id, chat_id)
+    new_value = not s.get("colour_grade_enabled", False)
     await db.update_settings(user_id, chat_id, {"colour_grade_enabled": new_value})
-    subs_on = settings.get("subtitles_enabled", True)
-    sfx_on = settings.get("sfx_enabled", False)
-    speed = float(settings.get("video_speed", 1.0))
-    res = settings.get("video_resolution", "720p")
-    dur = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    tz = settings.get("utc_offset_hours", 0)
+    kb = get_advanced_settings_keyboard(
+        subtitles_default_on=s.get("subtitles_enabled", True),
+        grade_on=new_value,
+        target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
+        utc_offset=s.get("utc_offset_hours", 0),
+        sfx_on=s.get("sfx_enabled", False),
+        video_speed=float(s.get("video_speed", 1.0)),
+        video_resolution=s.get("video_resolution", "720p"),
+    )
     await callback.answer(f"Colour grade: {'ON' if new_value else 'OFF'}")
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup=get_settings_keyboard(subs_on, new_value, dur, tz, sfx_on, speed, res)
-        )
+        await callback.message.edit_reply_markup(reply_markup=kb)
     except Exception:
-        await callback.message.answer(
-            "⚙️ Settings", reply_markup=get_settings_keyboard(subs_on, new_value, dur, tz, sfx_on, speed, res)
-        )
+        await callback.message.answer("⚙️ More settings", reply_markup=kb)
 
 
 @router.callback_query(lambda c: c.data == "settings:sfx_toggle", IsAllowed(allowed_users))
@@ -167,24 +147,23 @@ async def settings_sfx_toggle(callback: CallbackQuery):
     db = container.inject(DBService)
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
-    settings = await db.get_settings(user_id, chat_id)
-    new_value = not settings.get("sfx_enabled", False)
+    s = await db.get_settings(user_id, chat_id)
+    new_value = not s.get("sfx_enabled", False)
     await db.update_settings(user_id, chat_id, {"sfx_enabled": new_value})
-    subs_on = settings.get("subtitles_enabled", True)
-    grade_on = settings.get("colour_grade_enabled", False)
-    speed = float(settings.get("video_speed", 1.0))
-    res = settings.get("video_resolution", "720p")
-    dur = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    tz = settings.get("utc_offset_hours", 0)
+    kb = get_advanced_settings_keyboard(
+        subtitles_default_on=s.get("subtitles_enabled", True),
+        grade_on=s.get("colour_grade_enabled", False),
+        target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
+        utc_offset=s.get("utc_offset_hours", 0),
+        sfx_on=new_value,
+        video_speed=float(s.get("video_speed", 1.0)),
+        video_resolution=s.get("video_resolution", "720p"),
+    )
     await callback.answer(f"SFX / ASMR: {'ON' if new_value else 'OFF'}")
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup=get_settings_keyboard(subs_on, grade_on, dur, tz, new_value, speed, res)
-        )
+        await callback.message.edit_reply_markup(reply_markup=kb)
     except Exception:
-        await callback.message.answer(
-            "⚙️ Settings", reply_markup=get_settings_keyboard(subs_on, grade_on, dur, tz, new_value, speed, res)
-        )
+        await callback.message.answer("⚙️ More settings", reply_markup=kb)
 
 
 @router.callback_query(lambda c: c.data == "settings:resolution", IsAllowed(allowed_users))
@@ -231,12 +210,10 @@ async def settings_speed(callback: CallbackQuery):
     current = float(settings.get("video_speed", 1.0))
     await callback.message.answer(
         f"⚡ Current speed: <b>{current:.2f}×</b>\n\n"
-        "Choose video playback speed.\n"
         "• 1.0× — normal speed\n"
-        "• 1.15× — slightly faster, more dynamic\n"
-        "• 1.3× — fast, more scenes fit in the same clip\n"
-        "• 1.5× — turbo, maximum scenes per second\n\n"
-        "Higher speed = more content visible, shorter clip duration.",
+        "• 1.15× — slightly faster\n"
+        "• 1.3× — fast\n"
+        "• 1.5× — turbo",
         parse_mode="HTML",
         reply_markup=get_speed_keyboard(current),
     )
@@ -287,14 +264,12 @@ async def settings_duration(callback: CallbackQuery):
     current = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     await callback.message.answer(
         f"⏱ Current target duration: <b>{current}s</b>\n\n"
-        "Select how long the generated video should be.\n\n"
         "<b>Seedance</b> — splits into 10-second clips:\n"
         "• 15s → 2 clips\n"
         "• 30s → 3 clips\n"
         "• 45s → 5 clips\n"
         "• 60s → 6 clips\n\n"
-        "<b>Kling / OmniHuman</b> — duration is driven by voiceover length "
-        "(the model adapts to your TTS audio).",
+        "<b>Kling / OmniHuman</b> — duration is driven by voiceover length.",
         parse_mode="HTML",
         reply_markup=get_duration_keyboard(current),
     )
@@ -333,13 +308,7 @@ async def settings_timezone(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         f"🕐 Current timezone: <b>UTC{sign}{current}</b>\n\n"
         "Send your UTC offset as a whole number.\n"
-        "Examples:\n"
-        "  <code>+3</code>  — Moscow / Riyadh\n"
-        "  <code>+2</code>  — Kyiv / Helsinki (winter)\n"
-        "  <code>0</code>   — UTC / London (winter)\n"
-        "  <code>-5</code>  — New York (winter)\n\n"
-        "After setting this, you can enter publish time in your LOCAL time "
-        "and the bot will convert it to UTC automatically.",
+        "Examples: <code>+3</code>, <code>0</code>, <code>-5</code>",
         parse_mode="HTML",
     )
     await state.set_state(GenerationState.SET_UTC_OFFSET)
@@ -348,14 +317,14 @@ async def settings_timezone(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data == "settings:text_model", IsAllowed(allowed_users))
 async def settings_text_model(callback: CallbackQuery):
     await callback.answer()
-    vertex = container.inject(GeminiService)
+    gemini = container.inject(GeminiService)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"{m['name']}  |  {m['price']}",
                 callback_data=f"text-model:{m['name']}",
             )]
-            for m in vertex.get_text_models()
+            for m in gemini.get_text_models()
         ]
     )
     await callback.message.answer("Choose text model:", reply_markup=keyboard)
@@ -364,14 +333,14 @@ async def settings_text_model(callback: CallbackQuery):
 @router.callback_query(lambda c: c.data == "settings:image_model", IsAllowed(allowed_users))
 async def settings_image_model(callback: CallbackQuery):
     await callback.answer()
-    vertex = container.inject(GeminiService)
+    gemini = container.inject(GeminiService)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"{m['name']}  |  {m['price']}",
                 callback_data=f"image-model:{m['name']}",
             )]
-            for m in vertex.get_image_models()
+            for m in gemini.get_image_models()
         ]
     )
     await callback.message.answer("Choose image model:", reply_markup=keyboard)
@@ -380,14 +349,14 @@ async def settings_image_model(callback: CallbackQuery):
 @router.callback_query(lambda c: c.data == "settings:video_model", IsAllowed(allowed_users))
 async def settings_video_model(callback: CallbackQuery):
     await callback.answer()
-    vertex = container.inject(GeminiService)
+    gemini = container.inject(GeminiService)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"{m['name']}  |  {m['price']}",
                 callback_data=f"video-model:{m['name']}",
             )]
-            for m in vertex.get_video_models()
+            for m in gemini.get_video_models()
         ]
     )
     await callback.message.answer("Choose video model:", reply_markup=keyboard)
@@ -482,45 +451,11 @@ async def settings_music_path(callback: CallbackQuery, state: FSMContext):
         f"Current path: <code>{current}</code>\n"
         f"Current volume: <b>{vol}</b>\n\n"
         f"Send the full path to an mp3/wav file on the server.\n"
-        f"Example: <code>C:\\botClaude3\\video-gen-bot\\music\\bg.mp3</code>\n\n"
         f"To set volume add it after a space: <code>path/to/file.mp3 0.15</code>\n"
         f"Send a single dash (-) to disable music.",
         parse_mode="HTML",
     )
     await state.set_state(GenerationState.SET_MUSIC_PATH)
-
-
-@router.message(GenerationState.SET_MUSIC_PATH, IsAllowed(allowed_users))
-async def handle_set_music_path(message: Message, state: FSMContext):
-    import os as _os
-    db = container.inject(DBService)
-    raw = message.text.strip()
-    if raw == "-":
-        await db.update_settings(message.from_user.id, message.chat.id, {"background_music_path": ""})
-        await message.answer("✅ Background music disabled.")
-        await state.clear()
-        return
-    parts = raw.rsplit(" ", 1)
-    path = parts[0].strip()
-    volume = 0.18
-    if len(parts) == 2:
-        try:
-            volume = max(0.01, min(1.0, float(parts[1])))
-        except ValueError:
-            pass
-    # Normalise path separators — forward slashes also work on Windows
-    path = _os.path.normpath(path)
-    exists = _os.path.isfile(path)
-    await db.update_settings(message.from_user.id, message.chat.id, {
-        "background_music_path": path,
-        "background_music_volume": volume,
-    })
-    status = "✅ File found." if exists else "⚠️ File not found on disk — double-check the path. Music will be skipped during generation if missing."
-    await message.answer(
-        f"✅ Music path saved: <code>{path}</code>\nVolume: <b>{volume}</b>\n{status}",
-        parse_mode="HTML",
-    )
-    await state.clear()
 
 
 @router.callback_query(lambda c: c.data == "settings:voice_id", IsAllowed(allowed_users))
@@ -540,7 +475,7 @@ async def settings_negative_prompt(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.answer(
         "Send negative prompt — comma-separated concepts to avoid in image/video.\n"
-        "Example: blurry, distorted face, extra fingers, watermark, text on screen, low quality\n\n"
+        "Example: blurry, distorted face, extra fingers, watermark, text on screen\n\n"
         "Send a single dash (-) to clear."
     )
     await state.set_state(GenerationState.SET_NEGATIVE_PROMPT)
@@ -634,9 +569,7 @@ async def handle_set_grade_params(message: Message, state: FSMContext):
         )
         return
     try:
-        float(parts[0])
-        float(parts[1])
-        float(parts[2])
+        float(parts[0]); float(parts[1]); float(parts[2])
     except ValueError:
         await message.answer("❌ Could not parse numbers. Use format: 1.08, 1.15, 0.6")
         return
@@ -691,6 +624,38 @@ async def handle_set_utc_offset(message: Message, state: FSMContext):
     await db.update_settings(message.from_user.id, message.chat.id, {"utc_offset_hours": offset})
     sign = "+" if offset >= 0 else ""
     await message.answer(f"✅ Timezone set to <b>UTC{sign}{offset}</b>.", parse_mode="HTML")
+    await state.clear()
+
+
+@router.message(GenerationState.SET_MUSIC_PATH, IsAllowed(allowed_users))
+async def handle_set_music_path(message: Message, state: FSMContext):
+    import os as _os
+    db = container.inject(DBService)
+    raw = message.text.strip()
+    if raw == "-":
+        await db.update_settings(message.from_user.id, message.chat.id, {"background_music_path": ""})
+        await message.answer("✅ Background music disabled.")
+        await state.clear()
+        return
+    parts = raw.rsplit(" ", 1)
+    path = parts[0].strip()
+    volume = 0.18
+    if len(parts) == 2:
+        try:
+            volume = max(0.01, min(1.0, float(parts[1])))
+        except ValueError:
+            pass
+    path = _os.path.normpath(path)
+    exists = _os.path.isfile(path)
+    await db.update_settings(message.from_user.id, message.chat.id, {
+        "background_music_path": path,
+        "background_music_volume": volume,
+    })
+    status = "✅ File found." if exists else "⚠️ File not found on disk — double-check the path."
+    await message.answer(
+        f"✅ Music path saved: <code>{path}</code>\nVolume: <b>{volume}</b>\n{status}",
+        parse_mode="HTML",
+    )
     await state.clear()
 
 
