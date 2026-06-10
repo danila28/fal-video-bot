@@ -4,9 +4,7 @@ import asyncio
 import html
 import logging
 import os
-import random
 import re
-import time
 
 from aiogram.fsm.context import FSMContext
 from bot.keyboards import get_video_prompt_keyboard
@@ -14,13 +12,11 @@ from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
-from services.omnihuman import OmniHumanService
 from services.seedance import SeedanceService
 from utils import container
 from utils.config import config
 from utils.tg import send_long_message
 
-# Max chars of scene description passed to ElevenLabs SFX as ambient sound context.
 _SFX_SCENE_CHARS = 200
 
 logger = logging.getLogger(__name__)
@@ -28,9 +24,6 @@ logger = logging.getLogger(__name__)
 
 # ── Duration config ──────────────────────────────────────────────────────────
 
-# Supported target durations. Used directly for Seedance (clip count = target/10).
-# Kling / OmniHuman duration is driven by the TTS audio length (model decides
-# how many seconds based on the supplied voice track).
 DURATION_SEGMENTS: dict[int, tuple[int, int, int]] = {
     15: (8, 1, 7),
     30: (8, 3, 7),
@@ -39,30 +32,11 @@ DURATION_SEGMENTS: dict[int, tuple[int, int, int]] = {
 }
 DEFAULT_TARGET_DURATION = 15
 
-# Models that produce lip-sync video (already contain TTS audio inside the file).
-LIP_SYNC_MODELS = {"kling", "omnihuman"}
-# Models that produce silent scene clips (TTS is added in post-processing).
-SCENE_MODELS = {"seedance"}
-
-
-# ── Avatar style for lip-sync portraits ──────────────────────────────────────
-
-_AVATAR_STYLE_HINT = (
-    "Ultra-realistic portrait, clean minimal background, smart casual outfit, "
-    "confident engaging expression, soft natural lighting, sharp focus on face, "
-    "shallow depth of field, photorealistic skin, no artificial AI look. "
-    "Vertical portrait composition suitable for talking-head lip-sync video."
-)
-
 
 # ── State helpers ────────────────────────────────────────────────────────────
 
 async def _is_generating(state: FSMContext) -> bool:
-    """True if a generation is actively running.
-
-    Auto-clears the flag when set more than 30 minutes ago so a crash can't
-    leave the bot permanently locked.
-    """
+    import time
     data = await state.get_data()
     if not data.get("generation_in_progress"):
         return False
@@ -97,32 +71,16 @@ async def _post_process_video(
 ):
     """Pipeline: raw → grade → SFX → audio mux → karaoke subs → speed.
 
-    Behaviour depends on `video_model`:
-
-    • Lip-sync (kling/omnihuman): the raw video ALREADY contains the TTS
-      voice. We do NOT replace it — we mix optional music/SFX over the top
-      and keep the model's voice track.
-
-    • Scene clips (seedance): the raw video is silent — we mux TTS audio,
-      optional music and SFX into the file.
-
-    `voiceover_text` and `word_timings` are usually generated BEFORE this
-    function is called (lip-sync needs the audio file first to feed into
-    the model). They are passed back in so karaoke subtitles use the same
-    timings as the embedded voice.
-
-    Returns the same dict shape video-gen-bot uses, so handlers don't care
-    which model produced the video.
+    All scene models produce silent video — TTS is always muxed in post.
     """
     word_timings = word_timings or []
-    is_lip_sync = video_model in LIP_SYNC_MODELS
 
-    # Stage 1: colour grade (audio stream preserved via acodec=copy).
+    # Stage 1: colour grade.
     base_silent = raw_video_path
     if grade_enabled:
         base_silent = await gemini.apply_grade(raw_video_path, grade_params)
 
-    # Stage 1.5: ElevenLabs SFX (ambient sounds).
+    # Stage 1.5: ElevenLabs SFX.
     sfx_path = ""
     if sfx_enabled:
         try:
@@ -136,51 +94,36 @@ async def _post_process_video(
         except Exception as e:
             logger.warning(f"SFX generation failed (non-fatal): {e}")
 
-    # Stage 2: audio mux.
+    # Stage 2: audio mux — always mux TTS (scene models produce silent video).
     base_path = base_silent
     has_music = bool(music_path and os.path.exists(music_path))
     has_tts_track = bool(tts_audio_path and os.path.exists(tts_audio_path))
 
-    if is_lip_sync:
-        # Lip-sync videos already contain the voice — only re-encode if we
-        # actually have music or SFX to add. Otherwise keep raw file.
-        if has_music or sfx_path:
+    if has_tts_track:
+        try:
             base_path = await gemini.mux_audio(
                 base_silent,
-                audio_path="",                # no TTS to add — voice is in video
-                sfx_path=sfx_path,
-                music_path=music_path,
-                music_volume=music_volume,
-                replace_existing_audio=False,  # KEEP original voice
-            )
-    else:
-        # Scene clips are silent — always mux TTS (+ optional music / SFX)
-        # when we have a voiceover to put on top.
-        if has_tts_track:
-            try:
-                base_path = await gemini.mux_audio(
-                    base_silent,
-                    audio_path=tts_audio_path,
-                    sfx_path=sfx_path,
-                    music_path=music_path,
-                    music_volume=music_volume,
-                    replace_existing_audio=True,
-                )
-            except Exception as e:
-                logger.error(f"TTS pipeline failed, falling back to silent video: {e}")
-                base_path = base_silent
-                if notify:
-                    reason = str(e).splitlines()[0][:200]
-                    await notify(f"⚠️ Audio mux failed — video will be silent.\nReason: {reason}")
-        elif sfx_path or has_music:
-            base_path = await gemini.mux_audio(
-                base_silent,
-                audio_path="",
+                audio_path=tts_audio_path,
                 sfx_path=sfx_path,
                 music_path=music_path,
                 music_volume=music_volume,
                 replace_existing_audio=True,
             )
+        except Exception as e:
+            logger.error(f"TTS pipeline failed, falling back to silent video: {e}")
+            base_path = base_silent
+            if notify:
+                reason = str(e).splitlines()[0][:200]
+                await notify(f"⚠️ Audio mux failed — video will be silent.\nReason: {reason}")
+    elif sfx_path or has_music:
+        base_path = await gemini.mux_audio(
+            base_silent,
+            audio_path="",
+            sfx_path=sfx_path,
+            music_path=music_path,
+            music_volume=music_volume,
+            replace_existing_audio=True,
+        )
 
     # Stage 3: karaoke subtitles.
     if subs_default_on and word_timings:
@@ -212,7 +155,6 @@ async def _post_process_video(
 
 
 def _sfx_description_from_scene(video_prompt: str) -> str:
-    """Strip the Voiceover line and use the first chunk as ambient-sound context."""
     lines = [
         ln for ln in video_prompt.splitlines()
         if not ln.lower().lstrip().startswith("voiceover")
@@ -237,22 +179,21 @@ async def generate_video_for_model(
 
     Returns dict with:
       - raw_video_path: path to the unprocessed mp4
-      - tts_audio_path: path to TTS mp3 (or "" if model produced audio internally)
+      - tts_audio_path: path to TTS mp3
       - word_timings: list[(word, start, end)] for karaoke
       - voiceover_text: final voiceover string used
     """
     model = (settings.get("video_model") or "seedance").lower()
 
-    if model in LIP_SYNC_MODELS:
-        return await _generate_lipsync(
-            model=model,
+    if model == "kling":
+        return await _generate_kling(
             gemini=gemini,
             settings=settings,
+            video_prompt=video_prompt,
             voiceover_text=voiceover_text,
             image_path=image_path,
             notify=notify,
         )
-    # Default — scene model (Seedance).
     return await _generate_seedance(
         gemini=gemini,
         settings=settings,
@@ -263,56 +204,74 @@ async def generate_video_for_model(
     )
 
 
-async def _generate_lipsync(
+async def _generate_kling(
     *,
-    model: str,
     gemini: GeminiService,
     settings: dict,
+    video_prompt: str,
     voiceover_text: str,
     image_path: str | None,
     notify,
 ) -> dict:
-    """Kling / OmniHuman flow: TTS first → fal.ai(photo + audio) → video."""
-    if not image_path or not os.path.exists(image_path):
-        raise Exception("Lip-sync models require a reference photo (image_path).")
-    if not voiceover_text or not voiceover_text.strip():
-        raise Exception("Lip-sync models require a non-empty voiceover_text.")
+    """Kling v2.1 scene flow: split scene → generate clips → concat → TTS."""
+    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    n_clips = max(1, target_duration // 10)
+    negative_prompt = settings.get("negative_prompt") or ""
 
-    eleven = container.inject(ElevenLabsService)
-    if not eleven.is_configured:
-        raise Exception(
-            "ElevenLabs API key is not configured — lip-sync requires TTS.\n"
-            "Set ELEVENLABS_API_KEY in .env and a voice ID in ⚙️ Settings → 🎙 Voice."
-        )
-
-    await notify("🔊 Synthesizing voice via ElevenLabs…")
-    audio_path, word_timings = await eleven.synthesize(
-        text=voiceover_text,
-        voice_id=settings.get("voice_id") or "",
-    )
-    await notify("✅ Voice ready")
-
-    label = "Kling Avatar v2" if model == "kling" else "OmniHuman-1"
+    scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
     await notify(
-        f"⏱ Generating lip-sync via <b>{label}</b> — this takes <b>~7-10 minutes</b>, please wait…"
+        f"⏱ Generating <b>Kling v2.1</b> ({len(scenes)} clip(s) × 10s) — "
+        "each clip takes ~2-4 min…"
     )
 
-    if model == "kling":
-        svc = container.inject(KlingService)
+    kling = container.inject(KlingService)
+
+    if image_path and os.path.exists(image_path):
+        anchor_url = await kling.upload_photo(image_path)
     else:
-        svc = container.inject(OmniHumanService)
+        anchor_url = ""
 
-    raw_video = await svc.generate_avatar_video(
-        photo_path=image_path,
-        audio_path=audio_path,
-        prompt="",
-    )
-    await notify(f"✅ {label} video ready")
+    if anchor_url:
+        anchor_urls = [anchor_url] * len(scenes)
+        clips = await kling.generate_clips(
+            scene_prompts=scenes,
+            anchor_photo_urls=anchor_urls,
+            clip_duration=10,
+            negative_prompt=negative_prompt,
+        )
+    else:
+        clips = []
+        for i, prompt in enumerate(scenes):
+            await notify(f"🎞 Kling clip {i + 1}/{len(scenes)}…")
+            clip = await kling.generate_clip(
+                prompt=prompt,
+                duration=10,
+                negative_prompt=negative_prompt,
+            )
+            clips.append(clip)
+
+    raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
+    await notify("✅ Kling clips ready")
+
+    tts_audio_path = ""
+    word_timings: list = []
+    if voiceover_text and voiceover_text.strip():
+        try:
+            eleven = container.inject(ElevenLabsService)
+            if eleven.is_configured:
+                await notify("🔊 Synthesizing voice via ElevenLabs…")
+                tts_audio_path, word_timings = await eleven.synthesize(
+                    text=voiceover_text,
+                    voice_id=settings.get("voice_id") or "",
+                )
+        except Exception as e:
+            logger.warning(f"TTS for Kling failed (non-fatal): {e}")
+            await notify(f"⚠️ Voice synthesis failed: {str(e).splitlines()[0][:160]}")
 
     return {
         "raw_video_path": raw_video,
-        "tts_audio_path": "",            # voice is already inside the video
-        "word_timings": word_timings,    # used only for karaoke subtitles
+        "tts_audio_path": tts_audio_path,
+        "word_timings": word_timings,
         "voiceover_text": voiceover_text,
     }
 
@@ -326,7 +285,7 @@ async def _generate_seedance(
     image_path: str | None,
     notify,
 ) -> dict:
-    """Seedance flow: split voiceover into scenes → generate clips → concat."""
+    """Seedance flow: split scene → generate clips → concat → TTS."""
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     n_clips = max(1, target_duration // 10)
 
@@ -351,7 +310,6 @@ async def _generate_seedance(
             clip_duration=10,
         )
     else:
-        # No reference photo — fall back to text-to-video.
         clips = []
         for i, prompt in enumerate(scenes):
             await notify(f"🎞 Seedance clip {i + 1}/{len(scenes)}…")
@@ -361,7 +319,6 @@ async def _generate_seedance(
     raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
     await notify("✅ Seedance clips ready")
 
-    # Synthesise voiceover NOW (after video) so we can mux + karaoke in post.
     tts_audio_path = ""
     word_timings: list = []
     if voiceover_text and voiceover_text.strip():
@@ -386,18 +343,12 @@ async def _generate_seedance(
 
 
 def _split_voiceover_into_scenes(voiceover: str, target_count: int) -> list[str]:
-    """Split voiceover text into scene prompts for multi-clip Seedance.
-
-    Splits on sentence boundaries, then groups so the final scene count
-    matches `target_count`. Used directly as image-to-video prompts.
-    """
     sentences = re.split(r'(?<=[.!?])\s+', voiceover.strip())
     sentences = [s.strip() for s in sentences if s.strip()]
     if not sentences:
         return [voiceover or "scene continues"]
     if len(sentences) <= target_count:
         return sentences
-
     per_group = max(1, len(sentences) // target_count)
     scenes: list[str] = []
     for i in range(0, len(sentences), per_group):
@@ -414,59 +365,35 @@ def _split_voiceover_into_scenes(voiceover: str, target_count: int) -> list[str]
 # ── Prompt builders ─────────────────────────────────────────────────────────
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
-    """Generate a video_prompt from the enhanced idea, tuned to the chosen model.
-
-    For lip-sync models we ask the LLM for a clean voiceover script only
-    (no shot list — the model doesn't render scenes).
-
-    For scene models (Seedance) we ask for both a multi-shot scene and a
-    voiceover, as in video-gen-bot.
-    """
     base_sys = settings.get("system_video_prompt") or ""
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     target_words = max(20, int(target_duration * 2.3))
-    model = (settings.get("video_model") or "seedance").lower()
 
-    if model in LIP_SYNC_MODELS:
-        _FORMAT_SUFFIX = (
-            f"\n\n--- OUTPUT FORMAT (mandatory) ---\n"
-            f"Write a single voiceover monologue, written in the FIRST PERSON, "
-            f"approximately {target_words} words ({target_duration} seconds at "
-            f"natural talking pace). The speaker is an on-camera presenter "
-            f"directly addressing the viewer.\n\n"
-            f'Output ONLY the line:\nVoiceover: "<narration text>"\n\n'
-            f"Rules:\n"
-            f"- Do NOT use markdown\n"
-            f"- The word Voiceover: appears ONLY ONCE\n"
-            f"- Use straight double quotes\n"
-            f"- Conversational, engaging, G-rated content"
-        )
-    else:
-        _FORMAT_SUFFIX = (
-            f"\n\n--- OUTPUT FORMAT (mandatory) ---\n"
-            f"Write TWO sections only:\n\n"
-            f"Scene: Describe a sequence of 4-5 camera shots separated by 'cut to:'. "
-            f"Each shot = shot size + subject action + camera movement. "
-            f"Use this exact pattern:\n"
-            f"Wide shot of [subject+setting], camera slowly pushes in. "
-            f"Cut to: close-up of [detail+action], rack focus. "
-            f"Cut to: macro shot of [texture/ASMR detail], static. "
-            f"Cut to: medium shot of [character reaction], dolly back. "
-            f"Cut to: overhead shot of [final moment], crane up.\n"
-            f"Shot sizes to use: wide shot, medium shot, close-up, extreme close-up, "
-            f"macro shot, overhead shot, low angle shot.\n"
-            f"Camera moves to use: slow push in, dolly back, rack focus, pan left/right, "
-            f"crane up, handheld, static.\n"
-            f"Max 120 words for the Scene section.\n\n"
-            f'Voiceover: "narration text of approximately {target_words} words '
-            f'({target_duration} seconds at natural talking pace)"\n\n'
-            f"Rules:\n"
-            f"- Scene must depict EXACTLY the topic from the input\n"
-            f"- Do NOT use markdown (>, **, *)\n"
-            f"- The word Voiceover: appears ONLY ONCE\n"
-            f"- Use straight double quotes around the narration\n"
-            f"- G-rated, child-safe content only"
-        )
+    _FORMAT_SUFFIX = (
+        f"\n\n--- OUTPUT FORMAT (mandatory) ---\n"
+        f"Write TWO sections only:\n\n"
+        f"Scene: Describe a sequence of 4-5 camera shots separated by 'cut to:'. "
+        f"Each shot = shot size + subject action + camera movement. "
+        f"Use this exact pattern:\n"
+        f"Wide shot of [subject+setting], camera slowly pushes in. "
+        f"Cut to: close-up of [detail+action], rack focus. "
+        f"Cut to: macro shot of [texture/ASMR detail], static. "
+        f"Cut to: medium shot of [character reaction], dolly back. "
+        f"Cut to: overhead shot of [final moment], crane up.\n"
+        f"Shot sizes to use: wide shot, medium shot, close-up, extreme close-up, "
+        f"macro shot, overhead shot, low angle shot.\n"
+        f"Camera moves to use: slow push in, dolly back, rack focus, pan left/right, "
+        f"crane up, handheld, static.\n"
+        f"Max 120 words for the Scene section.\n\n"
+        f'Voiceover: "narration text of approximately {target_words} words '
+        f'({target_duration} seconds at natural talking pace)"\n\n'
+        f"Rules:\n"
+        f"- Scene must depict EXACTLY the topic from the input\n"
+        f"- Do NOT use markdown (>, **, *)\n"
+        f"- The word Voiceover: appears ONLY ONCE\n"
+        f"- Use straight double quotes around the narration\n"
+        f"- G-rated, child-safe content only"
+    )
 
     sys_with_hint = (base_sys + _FORMAT_SUFFIX) if base_sys else _FORMAT_SUFFIX
     return await gemini.generate_text(
@@ -481,26 +408,7 @@ async def _build_image_prompt(
     settings: dict,
     gemini: GeminiService,
 ) -> str:
-    """Generate the image prompt that drives Imagen.
-
-    For lip-sync models we override the user's system prompt with a strict
-    portrait template so the photo is always front-facing (Kling / OmniHuman
-    quality drops fast on non-portrait shots).
-    """
-    model = (settings.get("video_model") or "seedance").lower()
     base_sys = settings.get("system_image_prompt") or ""
-
-    if model in LIP_SYNC_MODELS:
-        base_sys = (
-            (base_sys + "\n\n") if base_sys else ""
-        ) + (
-            "Output a description of a single person suitable for a "
-            "front-facing studio portrait. Describe age, gender, ethnicity, "
-            "hair, clothing, expression and background in plain prose. "
-            "Do NOT mention multiple frames, multiple poses, or sequences — "
-            "the goal is ONE photo.\n" + _AVATAR_STYLE_HINT
-        )
-
     return await gemini.generate_text(
         enhance_prompt,
         base_sys,
@@ -508,46 +416,37 @@ async def _build_image_prompt(
     )
 
 
-# ── Helpers reused from video-gen-bot ───────────────────────────────────────
+# ── Helpers reused across handlers ──────────────────────────────────────────
 
 def _extract_first_scene(video_prompt: str, gemini) -> str:
-    """Extract the opening visual beat from a video_prompt."""
     scene, _ = _split_video_prompt(video_prompt, gemini)
     if not scene:
         return ""
-
     lines = scene.splitlines()
     block: list[str] = []
-
     for line in lines:
         stripped = line.strip()
         if not stripped:
             if block:
                 break
             continue
-
         low = stripped.lower()
         if low.startswith(("style:", "camera:", "audio:", "sfx:", "---")):
             break
-
         is_shot_header = stripped.startswith("[") and (
             bool(re.match(r"\[\d{1,2}:\d{2}", stripped))
             or "s]" in low
             or "shot" in low
         )
-
         if is_shot_header and block:
             break
-
         block.append(stripped)
         if len(block) >= 4:
             break
-
     return " ".join(block)
 
 
 def _split_video_prompt(video_prompt: str, gemini) -> tuple[str, str]:
-    """Split full video_prompt into (scene, voiceover)."""
     voiceover = gemini.extract_voiceover(video_prompt) or ""
     if not voiceover:
         return video_prompt.strip(), ""
@@ -577,22 +476,17 @@ async def _show_video_prompt(target, scene: str, voiceover: str):
 
 
 async def _apply_outro(gemini: GeminiService, result: dict) -> dict:
-    """Append the subscribe outro clip to every video variant in result."""
     outro_path = config.get("OUTRO_VIDEO_PATH", "")
     if not outro_path or not os.path.exists(outro_path):
         return result
-
     base_with_outro = await gemini.append_outro(result["video_path_base"], outro_path)
     result["video_path_base"] = base_with_outro
-
     subbed_with_outro = None
     if result.get("video_path_subbed"):
         subbed_with_outro = await gemini.append_outro(result["video_path_subbed"], outro_path)
         result["video_path_subbed"] = subbed_with_outro
-
     if result.get("subtitles_on") and subbed_with_outro:
         result["video_path"] = subbed_with_outro
     else:
         result["video_path"] = base_with_outro
-
     return result

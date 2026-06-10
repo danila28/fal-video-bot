@@ -269,7 +269,7 @@ async def settings_duration(callback: CallbackQuery):
         "• 30s → 3 clips\n"
         "• 45s → 5 clips\n"
         "• 60s → 6 clips\n\n"
-        "<b>Kling / OmniHuman</b> — duration is driven by voiceover length.",
+        "<b>Kling</b> — splits into 10-second clips (same as Seedance).",
         parse_mode="HTML",
         reply_markup=get_duration_keyboard(current),
     )

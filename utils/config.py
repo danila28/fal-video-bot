@@ -11,7 +11,7 @@ config = {
     # files copied from video-gen-bot keep working without edits.
     "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY") or os.getenv("VERTEX_API_KEY"),
 
-    # fal.ai API key — used by Kling, OmniHuman, Seedance and FLUX Pro fallback.
+    # fal.ai API key — used by Kling v2.1, Seedance 2.0 and FLUX Pro fallback.
     "FAL_KEY": os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY"),
 
     # PostgreSQL — shared with video-gen-bot. user_settings / chat_accounts /

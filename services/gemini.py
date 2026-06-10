@@ -1,7 +1,7 @@
 """Gemini text generation + ffmpeg post-processing.
 
 This service replaces video-gen-bot's VertexService for fal-video-bot.
-Video generation lives in dedicated fal.ai services (Kling / OmniHuman / Seedance);
+Video generation lives in dedicated fal.ai services (Kling v2.1 / Seedance 2.0);
 this module keeps only:
   • Gemini text generation (idea / plot / image / video prompts, hashtags)
   • ffmpeg helpers shared across pipelines: mux audio, karaoke ASS,
@@ -62,13 +62,10 @@ class GeminiService:
         ]
 
     def get_video_models(self):
-        # fal.ai models. Pricing — approximate, verify at fal.ai/pricing.
+        # fal.ai scene generation models. Pricing — approximate, verify at fal.ai/pricing.
         return [
-            # Lip-sync talking head — produces video with embedded audio from photo + audio.
-            {"name": "kling",     "price": "🎙 Lip-sync · ~$0.28/sec"},
-            {"name": "omnihuman", "price": "🎙 Lip-sync · ~$0.40/sec"},
-            # Scene-by-scene visual storytelling — no embedded audio (TTS added later).
-            {"name": "seedance",  "price": "🎬 Scene clips · ~$0.05/sec"},
+            {"name": "kling",    "price": "🎬 Scene · ~$0.10/clip"},
+            {"name": "seedance", "price": "🎬 Scene · ~$0.05/sec"},
         ]
 
     # ── Text generation ────────────────────────────────────────────────────
@@ -333,8 +330,7 @@ class GeminiService:
         """Mix TTS + optional music + optional SFX into the video.
 
         When `replace_existing_audio=False`, the original audio of the input
-        video is preserved and mixed *with* the new tracks — used for Kling /
-        OmniHuman lip-sync videos that already contain the voice.
+        video is preserved and mixed *with* the new tracks.
         """
         try:
             os.makedirs(self.static_dir, exist_ok=True)

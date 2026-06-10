@@ -9,8 +9,7 @@ If the primary backend fails with a server-side 5xx, the call automatically
 falls back to FLUX Pro so the pipeline doesn't break on transient outages.
 
 Output shape depends on the downstream video model:
-  • kling / omnihuman → 3:4 portrait (lip-sync wants front-facing face)
-  • seedance          → 9:16 vertical (scene anchor for vertical clips)
+  • kling / seedance → 9:16 vertical (scene anchor for vertical clips)
 """
 
 import asyncio
@@ -69,9 +68,7 @@ class ImageGenService:
 
     @staticmethod
     def _aspect_for_video_model(video_model: str) -> str:
-        """3:4 portrait for lip-sync; 9:16 vertical for scene clips."""
-        if video_model in ("kling", "omnihuman"):
-            return "3:4"
+        """9:16 vertical for all scene models (Kling, Seedance)."""
         return "9:16"
 
     # ── Google Imagen ─────────────────────────────────────────────────────
