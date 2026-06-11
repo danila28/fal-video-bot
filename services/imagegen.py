@@ -1,15 +1,16 @@
 """Photo generation for fal.ai video pipelines.
 
-Three backends — chosen via `model` parameter:
-  • imagen-4.0-fast-generate-001  — Google Imagen 4 Fast ("банано", Gemini API)
+Backends — chosen via `model` parameter:
+  • imagen-4.0-fast-generate-001  — Google Imagen 4 Fast (Gemini API)
   • gemini-2.5-flash-image        — Gemini image (multimodal, fast, cheap)
-  • fal-ai/flux-pro/v1.1          — fal.ai FLUX Pro 1.1 (third-party)
+  • fal-ai/flux-pro/v1.1          — FLUX Pro 1.1 (fallback)
+  • fal-ai/flux-pro/kontext       — FLUX Kontext: character consistency across scenes
+  • fal-ai/ideogram-v4            — Ideogram V4: stylised characters, creative art
 
 If the primary backend fails with a server-side 5xx, the call automatically
 falls back to FLUX Pro so the pipeline doesn't break on transient outages.
 
-Output shape depends on the downstream video model:
-  • kling / seedance → 9:16 vertical (scene anchor for vertical clips)
+All scene models use 9:16 vertical output.
 """
 
 import asyncio
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 _IMAGEN_MODEL_DEFAULT = "imagen-4.0-fast-generate-001"
 _GEMINI_IMAGE_MODEL   = "gemini-2.5-flash-image"
 _FLUX_MODEL           = "fal-ai/flux-pro/v1.1"
+_FLUX_KONTEXT_MODEL   = "fal-ai/flux-pro/kontext"
+_IDEOGRAM_MODEL       = "fal-ai/ideogram-v4"
 
 
 def _is_server_error(exc: BaseException) -> bool:
@@ -157,6 +160,48 @@ class ImageGenService:
         url = images[0]["url"]
         return await self._download(url)
 
+    # ── fal.ai FLUX Kontext ───────────────────────────────────────────────
+
+    async def _generate_via_kontext(self, prompt: str, aspect_ratio: str) -> str:
+        """FLUX Kontext: text-to-image with strong character consistency."""
+        flux_size = "portrait_16_9" if aspect_ratio == "9:16" else "portrait_4_3"
+        result = await asyncio.to_thread(
+            fal_client.subscribe,
+            _FLUX_KONTEXT_MODEL,
+            arguments={
+                "prompt": prompt,
+                "image_size": flux_size,
+                "num_inference_steps": 28,
+                "output_format": "jpeg",
+            },
+        )
+        images = result.get("images") or []
+        if not images:
+            raise RuntimeError("FLUX Kontext returned no images")
+        url = images[0]["url"]
+        return await self._download(url)
+
+    # ── fal.ai Ideogram V4 ────────────────────────────────────────────────
+
+    async def _generate_via_ideogram(self, prompt: str, aspect_ratio: str) -> str:
+        """Ideogram V4: stylised characters, creative art, strong text rendering."""
+        # Ideogram uses its own aspect ratio format
+        ideogram_aspect = "ASPECT_9_16" if aspect_ratio == "9:16" else "ASPECT_3_4"
+        result = await asyncio.to_thread(
+            fal_client.subscribe,
+            _IDEOGRAM_MODEL,
+            arguments={
+                "prompt": prompt,
+                "aspect_ratio": ideogram_aspect,
+                "style_type": "REALISTIC",
+            },
+        )
+        images = result.get("images") or []
+        if not images:
+            raise RuntimeError("Ideogram returned no images")
+        url = images[0]["url"]
+        return await self._download(url)
+
     async def _download(self, url: str) -> str:
         filename = f"{uuid.uuid4()}.jpg"
         dest = os.path.join(self.static_dir, filename)
@@ -167,7 +212,7 @@ class ImageGenService:
                 with open(dest, "wb") as f:
                     async for chunk in resp.content.iter_chunked(65536):
                         f.write(chunk)
-        logger.info(f"FLUX → {dest}")
+        logger.info(f"Image downloaded → {dest}")
         return dest
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -196,6 +241,10 @@ class ImageGenService:
                 return await self._generate_via_imagen(prompt, model, aspect_ratio)
             if model == _GEMINI_IMAGE_MODEL:
                 return await self._generate_via_gemini_image(prompt, aspect_ratio)
+            if model == _FLUX_KONTEXT_MODEL:
+                return await self._generate_via_kontext(prompt, aspect_ratio)
+            if model == _IDEOGRAM_MODEL:
+                return await self._generate_via_ideogram(prompt, aspect_ratio)
             if model.startswith("fal-ai/"):
                 return await self._generate_via_flux(prompt, aspect_ratio)
             # Unknown model — default to Imagen Fast

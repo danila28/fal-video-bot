@@ -1,12 +1,9 @@
-"""Kling v3 Pro scene video generation via fal.ai.
+"""PixVerse V6 scene video generation via fal.ai.
 
-Flow (identical to SeedanceService):
-  1. Upload reference photo to fal.ai storage
-  2. Generate clips via image-to-video (or text-to-video if no photo)
-  3. Return local MP4 paths for concatenation in post-processing
+Multi-clip flow identical to SeedanceService.
+Good for stylized content, creative effects, and character animation.
 
-Kling v3 Pro supports up to 15s per clip.
-Note: v3 uses `start_image_url` instead of `image_url` used in v2.x.
+Default clip duration is 5s (PixVerse's standard unit).
 """
 
 import asyncio
@@ -19,11 +16,11 @@ import fal_client
 
 logger = logging.getLogger(__name__)
 
-_MODEL_IMAGE_TO_VIDEO = "fal-ai/kling-video/v3/pro/image-to-video"
-_MODEL_TEXT_TO_VIDEO  = "fal-ai/kling-video/v3/pro/text-to-video"
+_MODEL_IMAGE_TO_VIDEO = "fal-ai/pixverse/v6/image-to-video"
+_MODEL_TEXT_TO_VIDEO  = "fal-ai/pixverse/v6/text-to-video"
 
 
-class KlingService:
+class PixVerseService:
     def __init__(self, api_key: str, static_dir: str = ""):
         os.environ["FAL_KEY"] = api_key
         if not static_dir:
@@ -43,39 +40,34 @@ class KlingService:
         self,
         prompt: str,
         image_url: str = "",
-        duration: int = 10,
+        duration: int = 5,
         aspect_ratio: str = "9:16",
-        negative_prompt: str = "",
+        resolution: str = "720p",
     ) -> str:
-        """Generate one clip. Returns local path to downloaded MP4.
-
-        `image_url` maps to `start_image_url` in the v3 API.
-        We use `generate_audio=False` — TTS is handled by ElevenLabs in post-processing.
-        """
+        """Generate one clip. Returns local path to downloaded MP4."""
         os.makedirs(self.static_dir, exist_ok=True)
 
         if image_url:
             model = _MODEL_IMAGE_TO_VIDEO
             arguments: dict = {
                 "prompt": prompt,
-                "start_image_url": image_url,
-                "duration": str(duration),
+                "image_url": image_url,
+                "duration": duration,
                 "aspect_ratio": aspect_ratio,
+                "quality": resolution,
                 "generate_audio": False,
             }
         else:
             model = _MODEL_TEXT_TO_VIDEO
             arguments = {
                 "prompt": prompt,
-                "duration": str(duration),
+                "duration": duration,
                 "aspect_ratio": aspect_ratio,
+                "quality": resolution,
                 "generate_audio": False,
             }
 
-        if negative_prompt:
-            arguments["negative_prompt"] = negative_prompt
-
-        logger.info(f"Kling v3 generating clip | model={model} | {duration}s")
+        logger.info(f"PixVerse V6 generating clip | model={model} | {duration}s")
 
         result = await asyncio.to_thread(
             fal_client.subscribe,
@@ -90,19 +82,17 @@ class KlingService:
         self,
         scene_prompts: list[str],
         anchor_photo_urls: list[str],
-        clip_duration: int = 10,
-        negative_prompt: str = "",
+        clip_duration: int = 5,
     ) -> list[str]:
         """Generate multiple clips with last-frame continuity anchoring."""
         clips: list[str] = []
 
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
-            logger.info(f"Kling v3 clip {i + 1}/{len(scene_prompts)}")
+            logger.info(f"PixVerse clip {i + 1}/{len(scene_prompts)}")
             clip_path = await self.generate_clip(
                 prompt=prompt,
                 image_url=photo_url,
                 duration=clip_duration,
-                negative_prompt=negative_prompt,
             )
             clips.append(clip_path)
 
@@ -130,7 +120,7 @@ class KlingService:
                 with open(dest, "wb") as f:
                     async for chunk in resp.content.iter_chunked(65536):
                         f.write(chunk)
-        logger.info(f"Downloaded Kling v3 clip → {dest}")
+        logger.info(f"Downloaded PixVerse clip → {dest}")
         return dest
 
     async def _extract_last_frame(self, video_path: str) -> str:
@@ -164,4 +154,4 @@ class KlingService:
                 return float(info["format"]["duration"])
         except Exception as e:
             logger.warning(f"ffprobe failed: {e}")
-        return 10.0
+        return 5.0

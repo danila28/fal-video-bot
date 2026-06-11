@@ -11,7 +11,9 @@ from services.db import DBService
 from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
+from services.happyhorse import HappyHorseService
 from services.kling import KlingService
+from services.pixverse import PixVerseService
 from services.seedance import SeedanceService
 from utils import container
 from utils.config import config
@@ -53,6 +55,8 @@ async def main():
         )
     )
     container.instance(KlingService(api_key=config["FAL_KEY"]))
+    container.instance(HappyHorseService(api_key=config["FAL_KEY"]))
+    container.instance(PixVerseService(api_key=config["FAL_KEY"]))
     container.instance(SeedanceService(api_key=config["FAL_KEY"]))
 
     container.instance(

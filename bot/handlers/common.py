@@ -10,8 +10,10 @@ from aiogram.fsm.context import FSMContext
 from bot.keyboards import get_video_prompt_keyboard
 from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
+from services.happyhorse import HappyHorseService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
+from services.pixverse import PixVerseService
 from services.seedance import SeedanceService
 from utils import container
 from utils.config import config
@@ -20,6 +22,9 @@ from utils.tg import send_long_message
 _SFX_SCENE_CHARS = 200
 
 logger = logging.getLogger(__name__)
+
+# Models that produce native audio — TTS must be layered on top, not replace the track.
+_NATIVE_AUDIO_MODELS = {"happy_horse"}
 
 
 # ── Duration config ──────────────────────────────────────────────────────────
@@ -71,18 +76,20 @@ async def _post_process_video(
 ):
     """Pipeline: raw → grade → SFX → audio mux → karaoke subs → speed.
 
-    All scene models produce silent video — TTS is always muxed in post.
+    Models in _NATIVE_AUDIO_MODELS already have audio baked in — TTS is
+    layered on top (replace_existing_audio=False) instead of replacing silence.
     """
     word_timings = word_timings or []
+    has_native_audio = video_model in _NATIVE_AUDIO_MODELS
 
     # Stage 1: colour grade.
     base_silent = raw_video_path
     if grade_enabled:
         base_silent = await gemini.apply_grade(raw_video_path, grade_params)
 
-    # Stage 1.5: ElevenLabs SFX.
+    # Stage 1.5: ElevenLabs SFX (only for models that produce silent video).
     sfx_path = ""
-    if sfx_enabled:
+    if sfx_enabled and not has_native_audio:
         try:
             eleven = container.inject(ElevenLabsService)
             if eleven.is_configured:
@@ -94,12 +101,12 @@ async def _post_process_video(
         except Exception as e:
             logger.warning(f"SFX generation failed (non-fatal): {e}")
 
-    # Stage 2: audio mux — always mux TTS (scene models produce silent video).
+    # Stage 2: audio mux.
     base_path = base_silent
     has_music = bool(music_path and os.path.exists(music_path))
     has_tts_track = bool(tts_audio_path and os.path.exists(tts_audio_path))
 
-    if has_tts_track:
+    if has_tts_track or sfx_path or has_music:
         try:
             base_path = await gemini.mux_audio(
                 base_silent,
@@ -107,23 +114,14 @@ async def _post_process_video(
                 sfx_path=sfx_path,
                 music_path=music_path,
                 music_volume=music_volume,
-                replace_existing_audio=True,
+                # Native-audio models already have a track — preserve it, don't replace.
+                replace_existing_audio=not has_native_audio,
             )
         except Exception as e:
-            logger.error(f"TTS pipeline failed, falling back to silent video: {e}")
-            base_path = base_silent
+            logger.error(f"Audio mux failed (non-fatal): {e}")
             if notify:
                 reason = str(e).splitlines()[0][:200]
                 await notify(f"⚠️ Audio mux failed — video will be silent.\nReason: {reason}")
-    elif sfx_path or has_music:
-        base_path = await gemini.mux_audio(
-            base_silent,
-            audio_path="",
-            sfx_path=sfx_path,
-            music_path=music_path,
-            music_volume=music_volume,
-            replace_existing_audio=True,
-        )
 
     # Stage 3: karaoke subtitles.
     if subs_default_on and word_timings:
@@ -175,106 +173,44 @@ async def generate_video_for_model(
     image_path: str | None,
     notify,
 ) -> dict:
-    """Generate a raw video for the configured model.
+    """Route to the correct generation function based on `settings['video_model']`.
 
     Returns dict with:
       - raw_video_path: path to the unprocessed mp4
-      - tts_audio_path: path to TTS mp3
+      - tts_audio_path: path to TTS mp3 (may be empty)
       - word_timings: list[(word, start, end)] for karaoke
       - voiceover_text: final voiceover string used
+      - has_native_audio: True if the video already contains audio
     """
     model = (settings.get("video_model") or "seedance").lower()
 
     if model == "kling":
         return await _generate_kling(
-            gemini=gemini,
-            settings=settings,
-            video_prompt=video_prompt,
-            voiceover_text=voiceover_text,
-            image_path=image_path,
-            notify=notify,
+            gemini=gemini, settings=settings,
+            video_prompt=video_prompt, voiceover_text=voiceover_text,
+            image_path=image_path, notify=notify,
         )
+    if model == "happy_horse":
+        return await _generate_happyhorse(
+            gemini=gemini, settings=settings,
+            video_prompt=video_prompt, voiceover_text=voiceover_text,
+            image_path=image_path, notify=notify,
+        )
+    if model == "pixverse":
+        return await _generate_pixverse(
+            gemini=gemini, settings=settings,
+            video_prompt=video_prompt, voiceover_text=voiceover_text,
+            image_path=image_path, notify=notify,
+        )
+    # Default: seedance
     return await _generate_seedance(
-        gemini=gemini,
-        settings=settings,
-        video_prompt=video_prompt,
-        voiceover_text=voiceover_text,
-        image_path=image_path,
-        notify=notify,
+        gemini=gemini, settings=settings,
+        video_prompt=video_prompt, voiceover_text=voiceover_text,
+        image_path=image_path, notify=notify,
     )
 
 
-async def _generate_kling(
-    *,
-    gemini: GeminiService,
-    settings: dict,
-    video_prompt: str,
-    voiceover_text: str,
-    image_path: str | None,
-    notify,
-) -> dict:
-    """Kling v2.1 scene flow: split scene → generate clips → concat → TTS."""
-    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, target_duration // 10)
-    negative_prompt = settings.get("negative_prompt") or ""
-
-    scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
-    await notify(
-        f"⏱ Generating <b>Kling v2.1</b> ({len(scenes)} clip(s) × 10s) — "
-        "each clip takes ~2-4 min…"
-    )
-
-    kling = container.inject(KlingService)
-
-    if image_path and os.path.exists(image_path):
-        anchor_url = await kling.upload_photo(image_path)
-    else:
-        anchor_url = ""
-
-    if anchor_url:
-        anchor_urls = [anchor_url] * len(scenes)
-        clips = await kling.generate_clips(
-            scene_prompts=scenes,
-            anchor_photo_urls=anchor_urls,
-            clip_duration=10,
-            negative_prompt=negative_prompt,
-        )
-    else:
-        clips = []
-        for i, prompt in enumerate(scenes):
-            await notify(f"🎞 Kling clip {i + 1}/{len(scenes)}…")
-            clip = await kling.generate_clip(
-                prompt=prompt,
-                duration=10,
-                negative_prompt=negative_prompt,
-            )
-            clips.append(clip)
-
-    raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
-    await notify("✅ Kling clips ready")
-
-    tts_audio_path = ""
-    word_timings: list = []
-    if voiceover_text and voiceover_text.strip():
-        try:
-            eleven = container.inject(ElevenLabsService)
-            if eleven.is_configured:
-                await notify("🔊 Synthesizing voice via ElevenLabs…")
-                tts_audio_path, word_timings = await eleven.synthesize(
-                    text=voiceover_text,
-                    voice_id=settings.get("voice_id") or "",
-                )
-        except Exception as e:
-            logger.warning(f"TTS for Kling failed (non-fatal): {e}")
-            await notify(f"⚠️ Voice synthesis failed: {str(e).splitlines()[0][:160]}")
-
-    return {
-        "raw_video_path": raw_video,
-        "tts_audio_path": tts_audio_path,
-        "word_timings": word_timings,
-        "voiceover_text": voiceover_text,
-    }
-
+# ── Per-model generation functions ───────────────────────────────────────────
 
 async def _generate_seedance(
     *,
@@ -285,7 +221,6 @@ async def _generate_seedance(
     image_path: str | None,
     notify,
 ) -> dict:
-    """Seedance flow: split scene → generate clips → concat → TTS."""
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     n_clips = max(1, target_duration // 10)
 
@@ -299,10 +234,6 @@ async def _generate_seedance(
 
     if image_path and os.path.exists(image_path):
         anchor_url = await seedance.upload_photo(image_path)
-    else:
-        anchor_url = ""
-
-    if anchor_url:
         anchor_urls = [anchor_url] * len(scenes)
         clips = await seedance.generate_clips(
             scene_prompts=scenes,
@@ -319,28 +250,198 @@ async def _generate_seedance(
     raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
     await notify("✅ Seedance clips ready")
 
-    tts_audio_path = ""
-    word_timings: list = []
-    if voiceover_text and voiceover_text.strip():
-        try:
-            eleven = container.inject(ElevenLabsService)
-            if eleven.is_configured:
-                await notify("🔊 Synthesizing voice via ElevenLabs…")
-                tts_audio_path, word_timings = await eleven.synthesize(
-                    text=voiceover_text,
-                    voice_id=settings.get("voice_id") or "",
-                )
-        except Exception as e:
-            logger.warning(f"TTS for Seedance failed (non-fatal): {e}")
-            await notify(f"⚠️ Voice synthesis failed: {str(e).splitlines()[0][:160]}")
+    tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
 
     return {
         "raw_video_path": raw_video,
         "tts_audio_path": tts_audio_path,
         "word_timings": word_timings,
         "voiceover_text": voiceover_text,
+        "has_native_audio": False,
     }
 
+
+async def _generate_kling(
+    *,
+    gemini: GeminiService,
+    settings: dict,
+    video_prompt: str,
+    voiceover_text: str,
+    image_path: str | None,
+    notify,
+) -> dict:
+    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    n_clips = max(1, target_duration // 10)
+    negative_prompt = settings.get("negative_prompt") or ""
+
+    scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
+    await notify(
+        f"⏱ Generating <b>Kling v3 Pro</b> ({len(scenes)} clip(s) × 10s) — "
+        "each clip takes ~2-4 min…"
+    )
+
+    kling = container.inject(KlingService)
+
+    if image_path and os.path.exists(image_path):
+        anchor_url = await kling.upload_photo(image_path)
+        anchor_urls = [anchor_url] * len(scenes)
+        clips = await kling.generate_clips(
+            scene_prompts=scenes,
+            anchor_photo_urls=anchor_urls,
+            clip_duration=10,
+            negative_prompt=negative_prompt,
+        )
+    else:
+        clips = []
+        for i, prompt in enumerate(scenes):
+            await notify(f"🎞 Kling clip {i + 1}/{len(scenes)}…")
+            clip = await kling.generate_clip(
+                prompt=prompt, duration=10, negative_prompt=negative_prompt,
+            )
+            clips.append(clip)
+
+    raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
+    await notify("✅ Kling clips ready")
+
+    tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
+
+    return {
+        "raw_video_path": raw_video,
+        "tts_audio_path": tts_audio_path,
+        "word_timings": word_timings,
+        "voiceover_text": voiceover_text,
+        "has_native_audio": False,
+    }
+
+
+async def _generate_happyhorse(
+    *,
+    gemini: GeminiService,
+    settings: dict,
+    video_prompt: str,
+    voiceover_text: str,
+    image_path: str | None,
+    notify,
+) -> dict:
+    """Happy Horse generates one video (≤15s) with built-in Foley audio.
+
+    A reference photo is required — generation is skipped with an error if missing.
+    TTS is synthesized separately and layered on top in post-processing.
+    """
+    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    clip_duration = max(3, min(15, target_duration))
+    resolution = settings.get("video_resolution", "720p")
+
+    if not image_path or not os.path.exists(image_path):
+        raise ValueError(
+            "Happy Horse requires a reference photo. "
+            "Go back and make sure an image was generated."
+        )
+
+    await notify(
+        f"⏱ Generating <b>Happy Horse</b> ({clip_duration}s, native audio) — "
+        "takes ~2-4 min…"
+    )
+
+    horse = container.inject(HappyHorseService)
+    anchor_url = await horse.upload_photo(image_path)
+
+    # Use the scene description (without voiceover) as the animation prompt.
+    scene_only = _strip_voiceover(video_prompt)
+    raw_video = await horse.generate_clip(
+        prompt=scene_only or video_prompt,
+        image_url=anchor_url,
+        duration=clip_duration,
+        resolution=resolution,
+    )
+    await notify("✅ Happy Horse clip ready")
+
+    tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
+
+    return {
+        "raw_video_path": raw_video,
+        "tts_audio_path": tts_audio_path,
+        "word_timings": word_timings,
+        "voiceover_text": voiceover_text,
+        "has_native_audio": True,  # Foley audio is baked into the video
+    }
+
+
+async def _generate_pixverse(
+    *,
+    gemini: GeminiService,
+    settings: dict,
+    video_prompt: str,
+    voiceover_text: str,
+    image_path: str | None,
+    notify,
+) -> dict:
+    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    n_clips = max(1, target_duration // 5)
+
+    scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
+    await notify(
+        f"⏱ Generating <b>PixVerse V6</b> ({len(scenes)} clip(s) × 5s) — "
+        "each clip takes ~1-3 min…"
+    )
+
+    pixverse = container.inject(PixVerseService)
+
+    if image_path and os.path.exists(image_path):
+        anchor_url = await pixverse.upload_photo(image_path)
+        anchor_urls = [anchor_url] * len(scenes)
+        clips = await pixverse.generate_clips(
+            scene_prompts=scenes,
+            anchor_photo_urls=anchor_urls,
+            clip_duration=5,
+        )
+    else:
+        clips = []
+        for i, prompt in enumerate(scenes):
+            await notify(f"🎞 PixVerse clip {i + 1}/{len(scenes)}…")
+            clip = await pixverse.generate_clip(prompt=prompt, duration=5)
+            clips.append(clip)
+
+    raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
+    await notify("✅ PixVerse clips ready")
+
+    tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
+
+    return {
+        "raw_video_path": raw_video,
+        "tts_audio_path": tts_audio_path,
+        "word_timings": word_timings,
+        "voiceover_text": voiceover_text,
+        "has_native_audio": False,
+    }
+
+
+# ── Shared TTS helper ────────────────────────────────────────────────────────
+
+async def _synthesize_tts(
+    voiceover_text: str,
+    settings: dict,
+    notify,
+) -> tuple[str, list]:
+    """Synthesize TTS via ElevenLabs. Returns (audio_path, word_timings)."""
+    if not voiceover_text or not voiceover_text.strip():
+        return "", []
+    try:
+        eleven = container.inject(ElevenLabsService)
+        if eleven.is_configured:
+            await notify("🔊 Synthesizing voice via ElevenLabs…")
+            audio_path, word_timings = await eleven.synthesize(
+                text=voiceover_text,
+                voice_id=settings.get("voice_id") or "",
+            )
+            return audio_path, word_timings
+    except Exception as e:
+        logger.warning(f"TTS failed (non-fatal): {e}")
+        await notify(f"⚠️ Voice synthesis failed: {str(e).splitlines()[0][:160]}")
+    return "", []
+
+
+# ── Scene splitting helpers ───────────────────────────────────────────────────
 
 def _split_voiceover_into_scenes(voiceover: str, target_count: int) -> list[str]:
     sentences = re.split(r'(?<=[.!?])\s+', voiceover.strip())
@@ -360,6 +461,15 @@ def _split_voiceover_into_scenes(voiceover: str, target_count: int) -> list[str]
                 scenes[-1] += " " + " ".join(remainder)
             break
     return scenes
+
+
+def _strip_voiceover(video_prompt: str) -> str:
+    """Return only the scene part, without the Voiceover: line."""
+    lines = [
+        ln for ln in video_prompt.splitlines()
+        if not ln.lower().lstrip().startswith("voiceover")
+    ]
+    return "\n".join(lines).strip()
 
 
 # ── Prompt builders ─────────────────────────────────────────────────────────

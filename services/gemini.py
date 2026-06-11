@@ -53,19 +53,21 @@ class GeminiService:
         ]
 
     def get_image_models(self):
-        # Imagen 4 Fast = "банано" — primary photo generator.
-        # fal-ai/flux-pro/v1.1 is the automatic fallback inside ImageGenService.
         return [
             {"name": "imagen-4.0-fast-generate-001", "price": "💰 ~$0.02/img"},
             {"name": "gemini-2.5-flash-image",       "price": "💰 ~$0.04/img"},
             {"name": "fal-ai/flux-pro/v1.1",         "price": "⚖️  ~$0.04/img"},
+            {"name": "fal-ai/flux-pro/kontext",       "price": "⚖️  ~$0.04/img · персонаж"},
+            {"name": "fal-ai/ideogram-v4",            "price": "🎨 ~$0.08/img · стиль"},
         ]
 
     def get_video_models(self):
         # fal.ai scene generation models. Pricing — approximate, verify at fal.ai/pricing.
         return [
-            {"name": "kling",    "price": "🎬 Scene · ~$0.10/clip"},
-            {"name": "seedance", "price": "🎬 Scene · ~$0.05/sec"},
+            {"name": "seedance",    "price": "🎬 Scene · ~$0.05/sec"},
+            {"name": "kling",       "price": "🎬 Scene · ~$0.11/sec"},
+            {"name": "happy_horse", "price": "🐴 Scene+Audio · ~$0.07/sec"},
+            {"name": "pixverse",    "price": "✨ Style · ~$0.05/sec"},
         ]
 
     # ── Text generation ────────────────────────────────────────────────────
