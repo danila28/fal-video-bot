@@ -1,4 +1,4 @@
-"""Entry point for the fal-video-bot Telegram bot."""
+"""Entry point for the atlas-video-bot Telegram bot."""
 
 import asyncio
 import logging
@@ -28,7 +28,7 @@ async def main():
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    logger.info("Starting fal-video-bot...")
+    logger.info("Starting atlas-video-bot...")
 
     bot = Bot(token=config["TELEGRAM_TOKEN"])
 
@@ -51,13 +51,13 @@ async def main():
     container.instance(
         ImageGenService(
             api_key=config["GEMINI_API_KEY"],
-            fal_api_key=config["FAL_KEY"],
+            atlas_api_key=config["ATLAS_API_KEY"],
         )
     )
-    container.instance(KlingService(api_key=config["FAL_KEY"]))
-    container.instance(HappyHorseService(api_key=config["FAL_KEY"]))
-    container.instance(PixVerseService(api_key=config["FAL_KEY"]))
-    container.instance(SeedanceService(api_key=config["FAL_KEY"]))
+    container.instance(KlingService(api_key=config["ATLAS_API_KEY"]))
+    container.instance(HappyHorseService(api_key=config["ATLAS_API_KEY"]))
+    container.instance(PixVerseService(api_key=config["ATLAS_API_KEY"]))
+    container.instance(SeedanceService(api_key=config["ATLAS_API_KEY"]))
 
     container.instance(
         BlotatoService(

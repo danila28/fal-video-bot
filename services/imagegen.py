@@ -1,14 +1,14 @@
-"""Photo generation for fal.ai video pipelines.
+"""Photo generation for video pipelines.
 
 Backends — chosen via `model` parameter:
-  • imagen-4.0-fast-generate-001  — Google Imagen 4 Fast (Gemini API)
-  • gemini-2.5-flash-image        — Gemini image (multimodal, fast, cheap)
-  • fal-ai/flux-pro/v1.1          — FLUX Pro 1.1 (fallback)
-  • fal-ai/flux-pro/kontext       — FLUX Kontext: character consistency across scenes
-  • fal-ai/ideogram-v4            — Ideogram V4: stylised characters, creative art
+  • imagen-4.0-fast-generate-001        — Google Imagen 4 Fast (Gemini API)
+  • gemini-2.5-flash-image              — Gemini image (multimodal, fast, cheap)
+  • black-forest-labs/flux-2-pro/text-to-image    — FLUX 2 Pro (fallback)
+  • black-forest-labs/flux-kontext-pro-text-to-image — FLUX Kontext: character consistency
+  • ideogram/ideogram-v3/text-to-image  — Ideogram V3: stylised characters, creative art
 
 If the primary backend fails with a server-side 5xx, the call automatically
-falls back to FLUX Pro so the pipeline doesn't break on transient outages.
+falls back to FLUX 2 Pro so the pipeline does not break on transient outages.
 
 All scene models use 9:16 vertical output.
 """
@@ -19,7 +19,6 @@ import os
 import uuid
 
 import aiohttp
-import fal_client
 from google import genai
 from google.genai import types
 from tenacity import (
@@ -30,13 +29,15 @@ from tenacity import (
     before_sleep_log,
 )
 
+from services.atlas import AtlasClient
+
 logger = logging.getLogger(__name__)
 
-_IMAGEN_MODEL_DEFAULT = "imagen-4.0-fast-generate-001"
-_GEMINI_IMAGE_MODEL   = "gemini-2.5-flash-image"
-_FLUX_MODEL           = "fal-ai/flux-pro/v1.1"
-_FLUX_KONTEXT_MODEL   = "fal-ai/flux-pro/kontext"
-_IDEOGRAM_MODEL       = "fal-ai/ideogram-v4"
+_IMAGEN_MODEL_DEFAULT  = "imagen-4.0-fast-generate-001"
+_GEMINI_IMAGE_MODEL    = "gemini-2.5-flash-image"
+_FLUX_MODEL            = "black-forest-labs/flux-2-pro/text-to-image"
+_FLUX_KONTEXT_MODEL    = "black-forest-labs/flux-kontext-pro-text-to-image"
+_IDEOGRAM_MODEL        = "ideogram/ideogram-v3/text-to-image"
 
 
 def _is_server_error(exc: BaseException) -> bool:
@@ -54,12 +55,9 @@ _imagen_retry = retry(
 
 
 class ImageGenService:
-    def __init__(self, api_key: str, fal_api_key: str = "", static_dir: str = ""):
+    def __init__(self, api_key: str, atlas_api_key: str = "", static_dir: str = ""):
         self._gemini = genai.Client(api_key=api_key)
-        if fal_api_key:
-            os.environ["FAL_KEY"] = fal_api_key
-        # Default to <project>/static so the directory lines up with the rest
-        # of the pipeline (TTS / GeminiService / cleanup loop).
+        self._atlas = AtlasClient(atlas_api_key, static_dir) if atlas_api_key else None
         if not static_dir:
             static_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
@@ -71,7 +69,7 @@ class ImageGenService:
 
     @staticmethod
     def _aspect_for_video_model(video_model: str) -> str:
-        """9:16 vertical for all scene models (Kling, Seedance)."""
+        """9:16 vertical for all scene models (Kling, Seedance, PixVerse)."""
         return "9:16"
 
     # ── Google Imagen ─────────────────────────────────────────────────────
@@ -139,81 +137,58 @@ class ImageGenService:
         finish_reasons = [getattr(c, "finish_reason", None) for c in candidates]
         raise Exception(f"Gemini image returned no data. finish_reasons={finish_reasons}")
 
-    # ── fal.ai FLUX Pro ───────────────────────────────────────────────────
+    # ── Atlas Cloud FLUX 2 Pro ────────────────────────────────────────────
+
+    def _require_atlas(self) -> AtlasClient:
+        if self._atlas is None:
+            raise RuntimeError(
+                "ATLAS_API_KEY is required for FLUX / Ideogram image generation"
+            )
+        return self._atlas
 
     async def _generate_via_flux(self, prompt: str, aspect_ratio: str) -> str:
-        flux_size = "portrait_4_3" if aspect_ratio == "3:4" else "portrait_16_9"
-        result = await asyncio.to_thread(
-            fal_client.subscribe,
+        atlas = self._require_atlas()
+        output_url = await atlas.generate_image(
             _FLUX_MODEL,
-            arguments={
+            {
                 "prompt": prompt,
-                "image_size": flux_size,
+                "aspect_ratio": aspect_ratio,
                 "num_inference_steps": 28,
-                "safety_tolerance": "2",
                 "output_format": "jpeg",
             },
         )
-        images = result.get("images") or []
-        if not images:
-            raise RuntimeError(f"FLUX returned no images")
-        url = images[0]["url"]
-        return await self._download(url)
+        return await atlas.download(output_url, ext="jpg")
 
-    # ── fal.ai FLUX Kontext ───────────────────────────────────────────────
+    # ── Atlas Cloud FLUX Kontext Pro ──────────────────────────────────────
 
     async def _generate_via_kontext(self, prompt: str, aspect_ratio: str) -> str:
-        """FLUX Kontext: text-to-image with strong character consistency."""
-        flux_size = "portrait_16_9" if aspect_ratio == "9:16" else "portrait_4_3"
-        result = await asyncio.to_thread(
-            fal_client.subscribe,
+        """FLUX Kontext Pro: text-to-image with strong character consistency."""
+        atlas = self._require_atlas()
+        output_url = await atlas.generate_image(
             _FLUX_KONTEXT_MODEL,
-            arguments={
+            {
                 "prompt": prompt,
-                "image_size": flux_size,
+                "aspect_ratio": aspect_ratio,
                 "num_inference_steps": 28,
                 "output_format": "jpeg",
             },
         )
-        images = result.get("images") or []
-        if not images:
-            raise RuntimeError("FLUX Kontext returned no images")
-        url = images[0]["url"]
-        return await self._download(url)
+        return await atlas.download(output_url, ext="jpg")
 
-    # ── fal.ai Ideogram V4 ────────────────────────────────────────────────
+    # ── Atlas Cloud Ideogram V3 ───────────────────────────────────────────
 
     async def _generate_via_ideogram(self, prompt: str, aspect_ratio: str) -> str:
-        """Ideogram V4: stylised characters, creative art, strong text rendering."""
-        # Ideogram uses its own aspect ratio format
-        ideogram_aspect = "ASPECT_9_16" if aspect_ratio == "9:16" else "ASPECT_3_4"
-        result = await asyncio.to_thread(
-            fal_client.subscribe,
+        """Ideogram V3: stylised characters, creative art, strong text rendering."""
+        atlas = self._require_atlas()
+        output_url = await atlas.generate_image(
             _IDEOGRAM_MODEL,
-            arguments={
+            {
                 "prompt": prompt,
-                "aspect_ratio": ideogram_aspect,
+                "aspect_ratio": aspect_ratio,
                 "style_type": "REALISTIC",
             },
         )
-        images = result.get("images") or []
-        if not images:
-            raise RuntimeError("Ideogram returned no images")
-        url = images[0]["url"]
-        return await self._download(url)
-
-    async def _download(self, url: str) -> str:
-        filename = f"{uuid.uuid4()}.jpg"
-        dest = os.path.join(self.static_dir, filename)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Download failed: HTTP {resp.status}")
-                with open(dest, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(65536):
-                        f.write(chunk)
-        logger.info(f"Image downloaded → {dest}")
-        return dest
+        return await atlas.download(output_url, ext="jpg")
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -225,7 +200,7 @@ class ImageGenService:
     ) -> str:
         """Generate ONE photo from a prompt.
 
-        `model` picks the primary backend; FLUX Pro is used as automatic
+        `model` picks the primary backend; FLUX 2 Pro is used as automatic
         fallback when the primary backend fails with a server error.
         `video_model` selects the output aspect ratio.
         """
@@ -245,10 +220,10 @@ class ImageGenService:
                 return await self._generate_via_kontext(prompt, aspect_ratio)
             if model == _IDEOGRAM_MODEL:
                 return await self._generate_via_ideogram(prompt, aspect_ratio)
-            if model.startswith("fal-ai/"):
+            if model == _FLUX_MODEL or model.startswith("black-forest-labs/"):
                 return await self._generate_via_flux(prompt, aspect_ratio)
             # Unknown model — default to Imagen Fast
             return await self._generate_via_imagen(prompt, _IMAGEN_MODEL_DEFAULT, aspect_ratio)
         except Exception as e:
-            logger.warning(f"Primary image backend failed ({e}); falling back to FLUX Pro…")
+            logger.warning(f"Primary image backend failed ({e}); falling back to FLUX 2 Pro…")
             return await self._generate_via_flux(prompt, aspect_ratio)

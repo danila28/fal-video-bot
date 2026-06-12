@@ -1,9 +1,9 @@
-"""PixVerse V6 scene video generation via fal.ai.
+"""PixVerse V4.5 scene video generation via Atlas Cloud.
 
 Multi-clip flow identical to SeedanceService.
 Good for stylized content, creative effects, and character animation.
 
-Default clip duration is 5s (PixVerse's standard unit).
+Default clip duration is 5 s (PixVerse's standard unit).
 """
 
 import asyncio
@@ -11,29 +11,23 @@ import logging
 import os
 import uuid
 
-import aiohttp
-import fal_client
+from services.atlas import AtlasClient
 
 logger = logging.getLogger(__name__)
 
-_MODEL_IMAGE_TO_VIDEO = "fal-ai/pixverse/v6/image-to-video"
-_MODEL_TEXT_TO_VIDEO  = "fal-ai/pixverse/v6/text-to-video"
+_MODEL_IMAGE_TO_VIDEO = "pixverse/pixverse-v4.5-i2v"
+_MODEL_TEXT_TO_VIDEO  = "pixverse/pixverse-v4.5-t2v"
 
 
 class PixVerseService:
     def __init__(self, api_key: str, static_dir: str = ""):
-        os.environ["FAL_KEY"] = api_key
-        if not static_dir:
-            static_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
-            )
-        self.static_dir = static_dir
-        os.makedirs(static_dir, exist_ok=True)
+        self._atlas = AtlasClient(api_key, static_dir)
+        self.static_dir = self._atlas.static_dir
 
     async def upload_photo(self, photo_path: str) -> str:
-        """Upload a local photo to fal.ai storage. Returns public URL."""
-        url = await asyncio.to_thread(fal_client.upload_file, photo_path)
-        logger.info(f"Uploaded {photo_path} → {url}")
+        """Upload a local photo to Atlas Cloud storage. Returns public URL."""
+        url = await self._atlas.upload_file(photo_path)
+        logger.info(f"PixVerse: uploaded {photo_path} → {url}")
         return url
 
     async def generate_clip(
@@ -49,7 +43,7 @@ class PixVerseService:
 
         if image_url:
             model = _MODEL_IMAGE_TO_VIDEO
-            arguments: dict = {
+            params: dict = {
                 "prompt": prompt,
                 "image_url": image_url,
                 "duration": duration,
@@ -59,7 +53,7 @@ class PixVerseService:
             }
         else:
             model = _MODEL_TEXT_TO_VIDEO
-            arguments = {
+            params = {
                 "prompt": prompt,
                 "duration": duration,
                 "aspect_ratio": aspect_ratio,
@@ -67,16 +61,9 @@ class PixVerseService:
                 "generate_audio": False,
             }
 
-        logger.info(f"PixVerse V6 generating clip | model={model} | {duration}s")
-
-        result = await asyncio.to_thread(
-            fal_client.subscribe,
-            model,
-            arguments=arguments,
-        )
-
-        video_url = result["video"]["url"]
-        return await self._download(video_url)
+        logger.info(f"PixVerse V4.5 generating clip | model={model} | {duration}s")
+        video_url = await self._atlas.generate_video(model, params)
+        return await self._atlas.download(video_url, ext="mp4")
 
     async def generate_clips(
         self,
@@ -109,19 +96,6 @@ class PixVerseService:
                             pass
 
         return clips
-
-    async def _download(self, url: str) -> str:
-        filename = f"{uuid.uuid4()}.mp4"
-        dest = os.path.join(self.static_dir, filename)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise Exception(f"Failed to download video: HTTP {resp.status}")
-                with open(dest, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(65536):
-                        f.write(chunk)
-        logger.info(f"Downloaded PixVerse clip → {dest}")
-        return dest
 
     async def _extract_last_frame(self, video_path: str) -> str:
         try:

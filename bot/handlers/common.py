@@ -1,4 +1,4 @@
-"""Shared helpers, constants and pipeline routers for fal-video-bot."""
+"""Shared helpers, constants and pipeline routers for atlas-video-bot."""
 
 import asyncio
 import html
@@ -381,7 +381,7 @@ async def _generate_pixverse(
 
     scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
     await notify(
-        f"⏱ Generating <b>PixVerse V6</b> ({len(scenes)} clip(s) × 5s) — "
+        f"⏱ Generating <b>PixVerse V4.5</b> ({len(scenes)} clip(s) × 5s) — "
         "each clip takes ~1-3 min…"
     )
 

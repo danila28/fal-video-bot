@@ -11,8 +11,8 @@ config = {
     # files copied from video-gen-bot keep working without edits.
     "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY") or os.getenv("VERTEX_API_KEY"),
 
-    # fal.ai API key — used by Kling v2.1, Seedance 2.0 and FLUX Pro fallback.
-    "FAL_KEY": os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY"),
+    # Atlas Cloud API key — used by all video generation and FLUX/Ideogram image models.
+    "ATLAS_API_KEY": os.getenv("ATLAS_API_KEY"),
 
     # PostgreSQL — shared with video-gen-bot. user_settings / chat_accounts /
     # video_history / generation_log / fsm_states tables are co-tenant by
@@ -43,7 +43,7 @@ config = {
 _REQUIRED = [
     "TELEGRAM_TOKEN",
     "GEMINI_API_KEY",
-    "FAL_KEY",
+    "ATLAS_API_KEY",
     "CORE_DB_NAME",
     "DB_USERNAME",
     "DB_PASSWORD",

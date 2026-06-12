@@ -1,4 +1,4 @@
-# fal-video-bot — runs alongside video-gen-bot and shares its PostgreSQL.
+# atlas-video-bot — runs alongside video-gen-bot and shares its PostgreSQL.
 #
 # Before `docker compose up`:
 #   1. Make sure video-gen-bot postgres is already running (it owns the DB).
@@ -15,12 +15,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: fal-video-bot
+    container_name: atlas-video-bot
     restart: unless-stopped
     environment:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - FAL_KEY=${FAL_KEY}
+      - ATLAS_API_KEY=${ATLAS_API_KEY}
       - CORE_DB_NAME=${CORE_DB_NAME}
       - DB_USERNAME=${DB_USERNAME}
       - DB_PASSWORD=${DB_PASSWORD}

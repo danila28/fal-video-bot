@@ -1,12 +1,11 @@
-"""Kling v3 Pro scene video generation via fal.ai.
+"""Kling v3 Pro scene video generation via Atlas Cloud.
 
 Flow (identical to SeedanceService):
-  1. Upload reference photo to fal.ai storage
+  1. Upload reference photo to Atlas Cloud storage
   2. Generate clips via image-to-video (or text-to-video if no photo)
   3. Return local MP4 paths for concatenation in post-processing
 
-Kling v3 Pro supports up to 15s per clip.
-Note: v3 uses `start_image_url` instead of `image_url` used in v2.x.
+Kling v3 Pro supports 5 s or 10 s per clip.
 """
 
 import asyncio
@@ -14,29 +13,23 @@ import logging
 import os
 import uuid
 
-import aiohttp
-import fal_client
+from services.atlas import AtlasClient
 
 logger = logging.getLogger(__name__)
 
-_MODEL_IMAGE_TO_VIDEO = "fal-ai/kling-video/v3/pro/image-to-video"
-_MODEL_TEXT_TO_VIDEO  = "fal-ai/kling-video/v3/pro/text-to-video"
+_MODEL_IMAGE_TO_VIDEO = "kwaivgi/kling-v3.0-pro/image-to-video"
+_MODEL_TEXT_TO_VIDEO  = "kwaivgi/kling-v3.0-pro/text-to-video"
 
 
 class KlingService:
     def __init__(self, api_key: str, static_dir: str = ""):
-        os.environ["FAL_KEY"] = api_key
-        if not static_dir:
-            static_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
-            )
-        self.static_dir = static_dir
-        os.makedirs(static_dir, exist_ok=True)
+        self._atlas = AtlasClient(api_key, static_dir)
+        self.static_dir = self._atlas.static_dir
 
     async def upload_photo(self, photo_path: str) -> str:
-        """Upload a local photo to fal.ai storage. Returns public URL."""
-        url = await asyncio.to_thread(fal_client.upload_file, photo_path)
-        logger.info(f"Uploaded {photo_path} → {url}")
+        """Upload a local photo to Atlas Cloud storage. Returns public URL."""
+        url = await self._atlas.upload_file(photo_path)
+        logger.info(f"Kling: uploaded {photo_path} → {url}")
         return url
 
     async def generate_clip(
@@ -49,42 +42,33 @@ class KlingService:
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
 
-        `image_url` maps to `start_image_url` in the v3 API.
-        We use `generate_audio=False` — TTS is handled by ElevenLabs in post-processing.
+        Atlas Cloud uses `image` (not `start_image_url` / `image_url`) for
+        the reference frame in Kling v3. Aspect ratio is inferred from the
+        image when one is provided; for text-to-video it is passed explicitly.
         """
         os.makedirs(self.static_dir, exist_ok=True)
 
         if image_url:
             model = _MODEL_IMAGE_TO_VIDEO
-            arguments: dict = {
+            params: dict = {
                 "prompt": prompt,
-                "start_image_url": image_url,
-                "duration": str(duration),
-                "aspect_ratio": aspect_ratio,
-                "generate_audio": False,
+                "image": image_url,
+                "duration": duration,
             }
         else:
             model = _MODEL_TEXT_TO_VIDEO
-            arguments = {
+            params = {
                 "prompt": prompt,
-                "duration": str(duration),
+                "duration": duration,
                 "aspect_ratio": aspect_ratio,
-                "generate_audio": False,
             }
 
         if negative_prompt:
-            arguments["negative_prompt"] = negative_prompt
+            params["negative_prompt"] = negative_prompt
 
         logger.info(f"Kling v3 generating clip | model={model} | {duration}s")
-
-        result = await asyncio.to_thread(
-            fal_client.subscribe,
-            model,
-            arguments=arguments,
-        )
-
-        video_url = result["video"]["url"]
-        return await self._download(video_url)
+        video_url = await self._atlas.generate_video(model, params)
+        return await self._atlas.download(video_url, ext="mp4")
 
     async def generate_clips(
         self,
@@ -119,19 +103,6 @@ class KlingService:
                             pass
 
         return clips
-
-    async def _download(self, url: str) -> str:
-        filename = f"{uuid.uuid4()}.mp4"
-        dest = os.path.join(self.static_dir, filename)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    raise Exception(f"Failed to download video: HTTP {resp.status}")
-                with open(dest, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(65536):
-                        f.write(chunk)
-        logger.info(f"Downloaded Kling v3 clip → {dest}")
-        return dest
 
     async def _extract_last_frame(self, video_path: str) -> str:
         try:

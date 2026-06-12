@@ -1,7 +1,7 @@
 """Gemini text generation + ffmpeg post-processing.
 
-This service replaces video-gen-bot's VertexService for fal-video-bot.
-Video generation lives in dedicated fal.ai services (Kling v2.1 / Seedance 2.0);
+This service replaces video-gen-bot's VertexService for atlas-video-bot.
+Video generation lives in dedicated Atlas Cloud services (Kling / Seedance / PixVerse / HappyHorse);
 this module keeps only:
   • Gemini text generation (idea / plot / image / video prompts, hashtags)
   • ffmpeg helpers shared across pipelines: mux audio, karaoke ASS,
@@ -54,19 +54,19 @@ class GeminiService:
 
     def get_image_models(self):
         return [
-            {"name": "imagen-4.0-fast-generate-001", "price": "💰 ~$0.02/img"},
-            {"name": "gemini-2.5-flash-image",       "price": "💰 ~$0.04/img"},
-            {"name": "fal-ai/flux-pro/v1.1",         "price": "⚖️  ~$0.04/img"},
-            {"name": "fal-ai/flux-pro/kontext",       "price": "⚖️  ~$0.04/img · персонаж"},
-            {"name": "fal-ai/ideogram-v4",            "price": "🎨 ~$0.08/img · стиль"},
+            {"name": "imagen-4.0-fast-generate-001",                    "price": "💰 ~$0.02/img"},
+            {"name": "gemini-2.5-flash-image",                          "price": "💰 ~$0.04/img"},
+            {"name": "black-forest-labs/flux-2-pro/text-to-image",      "price": "⚖️  ~$0.05/img"},
+            {"name": "black-forest-labs/flux-kontext-pro-text-to-image", "price": "⚖️  ~$0.05/img · персонаж"},
+            {"name": "ideogram/ideogram-v3/text-to-image",              "price": "🎨 ~$0.08/img · стиль"},
         ]
 
     def get_video_models(self):
-        # fal.ai scene generation models. Pricing — approximate, verify at fal.ai/pricing.
+        # Atlas Cloud scene generation models. Pricing — approximate, verify at atlascloud.ai/pricing.
         return [
-            {"name": "seedance",    "price": "🎬 Scene · ~$0.05/sec"},
-            {"name": "kling",       "price": "🎬 Scene · ~$0.11/sec"},
-            {"name": "happy_horse", "price": "🐴 Scene+Audio · ~$0.07/sec"},
+            {"name": "seedance",    "price": "🎬 Scene · ~$0.08/sec"},
+            {"name": "kling",       "price": "🎬 Scene · ~$0.10/sec"},
+            {"name": "happy_horse", "price": "🐴 Scene+Audio · ~$0.14/sec"},
             {"name": "pixverse",    "price": "✨ Style · ~$0.05/sec"},
         ]
 
