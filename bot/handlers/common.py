@@ -518,27 +518,25 @@ def _strip_voiceover(video_prompt: str) -> str:
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
     base_sys = settings.get("system_video_prompt") or ""
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    n_clips = max(1, math.ceil(target_duration / 10))
     target_words = max(20, int(target_duration * 2.3))
+    scene_word_limit = n_clips * 30
 
     _FORMAT_SUFFIX = (
         f"\n\n--- OUTPUT FORMAT (mandatory) ---\n"
         f"Write TWO sections only:\n\n"
-        f"Scene: Describe a sequence of 4-5 camera shots separated by 'cut to:'. "
-        f"Each shot = shot size + subject action + camera movement. "
-        f"Use this exact pattern:\n"
-        f"Wide shot of [subject+setting], camera slowly pushes in. "
-        f"Cut to: close-up of [detail+action], rack focus. "
-        f"Cut to: macro shot of [texture/ASMR detail], static. "
-        f"Cut to: medium shot of [character reaction], dolly back. "
-        f"Cut to: overhead shot of [final moment], crane up.\n"
-        f"Shot sizes to use: wide shot, medium shot, close-up, extreme close-up, "
-        f"macro shot, overhead shot, low angle shot.\n"
-        f"Camera moves to use: slow push in, dolly back, rack focus, pan left/right, "
-        f"crane up, handheld, static.\n"
-        f"Max 120 words for the Scene section.\n\n"
+        f"Scene: Describe EXACTLY {n_clips} camera shot(s) separated by 'Cut to:'. "
+        f"Each shot covers ~10 seconds of the story and must show what is happening "
+        f"at that moment in the narration. "
+        f"Format each shot as: shot size + character action + camera movement.\n"
+        f"Shot sizes: wide shot, medium shot, close-up, extreme close-up, overhead shot, low angle shot.\n"
+        f"Camera moves: slow push in, dolly back, rack focus, pan left/right, crane up, handheld, static.\n"
+        f"Max {scene_word_limit} words for the Scene section.\n\n"
         f'Voiceover: "narration text of approximately {target_words} words '
         f'({target_duration} seconds at natural talking pace)"\n\n'
         f"Rules:\n"
+        f"- Write EXACTLY {n_clips} shots in the Scene — no more, no less\n"
+        f"- Each shot must sync with what is spoken in the Voiceover at that moment\n"
         f"- Scene must depict EXACTLY the topic from the input\n"
         f"- Do NOT use markdown (>, **, *)\n"
         f"- The word Voiceover: appears ONLY ONCE\n"
