@@ -1,11 +1,16 @@
-"""Kling v3 Pro scene video generation via Atlas Cloud.
+"""Kling video generation via Atlas Cloud.
 
-Flow (identical to SeedanceService):
-  1. Upload reference photo to Atlas Cloud storage
-  2. Generate clips via image-to-video (or text-to-video if no photo)
-  3. Return local MP4 paths for concatenation in post-processing
+Supported models (set via settings video_model):
+  kling             → Kling v3.0 Pro  Image-to-Video  (current default)
+  kling_v3_std      → Kling v3.0 Std  Image-to-Video
+  kling_o3_pro      → Kling O3 Pro    Image-to-Video
+  kling_o3_std      → Kling O3 Std    Image-to-Video
+  kling_o3_pro_ref  → Kling O3 Pro    Reference-to-Video
+  kling_o3_std_ref  → Kling O3 Std    Reference-to-Video
 
-Kling v3 Pro supports 5 s or 10 s per clip.
+Reference-to-Video models use an `images` array (not `image`) and do NOT
+support negative_prompt. Last-frame continuity is skipped for them because
+the reference defines character identity, not the starting frame.
 """
 
 import asyncio
@@ -17,8 +22,41 @@ from services.atlas import AtlasClient
 
 logger = logging.getLogger(__name__)
 
-_MODEL_IMAGE_TO_VIDEO = "kwaivgi/kling-v3.0-pro/image-to-video"
-_MODEL_TEXT_TO_VIDEO  = "kwaivgi/kling-v3.0-pro/text-to-video"
+# ── Atlas Cloud model IDs ─────────────────────────────────────────────────────
+
+_V3_PRO_I2V   = "kwaivgi/kling-v3.0-pro/image-to-video"
+_V3_PRO_T2V   = "kwaivgi/kling-v3.0-pro/text-to-video"
+_V3_STD_I2V   = "kwaivgi/kling-v3.0-std/image-to-video"
+_O3_PRO_I2V   = "kwaivgi/kling-video-o3-pro/image-to-video"
+_O3_STD_I2V   = "kwaivgi/kling-video-o3-std/image-to-video"
+_O3_PRO_REF   = "kwaivgi/kling-video-o3-pro/reference-to-video"
+_O3_STD_REF   = "kwaivgi/kling-video-o3-std/reference-to-video"
+
+# Backwards-compat aliases used by existing code
+_MODEL_IMAGE_TO_VIDEO = _V3_PRO_I2V
+_MODEL_TEXT_TO_VIDEO  = _V3_PRO_T2V
+
+# Map from settings model name → Atlas model ID
+MODEL_IDS: dict[str, str] = {
+    "kling":            _V3_PRO_I2V,
+    "kling_v3_std":     _V3_STD_I2V,
+    "kling_o3_pro":     _O3_PRO_I2V,
+    "kling_o3_std":     _O3_STD_I2V,
+    "kling_o3_pro_ref": _O3_PRO_REF,
+    "kling_o3_std_ref": _O3_STD_REF,
+}
+
+# Human-readable labels used in notify messages
+MODEL_LABELS: dict[str, str] = {
+    "kling":            "Kling v3 Pro",
+    "kling_v3_std":     "Kling v3 Std",
+    "kling_o3_pro":     "Kling O3 Pro",
+    "kling_o3_std":     "Kling O3 Std",
+    "kling_o3_pro_ref": "Kling O3 Pro Reference",
+    "kling_o3_std_ref": "Kling O3 Std Reference",
+}
+
+_REFERENCE_MODELS = {_O3_PRO_REF, _O3_STD_REF}
 
 
 class KlingService:
@@ -39,34 +77,44 @@ class KlingService:
         duration: int = 10,
         aspect_ratio: str = "9:16",
         negative_prompt: str = "",
+        model_id: str = _V3_PRO_I2V,
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
 
-        Atlas Cloud uses `image` (not `start_image_url` / `image_url`) for
-        the reference frame in Kling v3. Aspect ratio is inferred from the
-        image when one is provided; for text-to-video it is passed explicitly.
+        Reference models use `images` (array) instead of `image` and ignore
+        negative_prompt (not supported by the Reference API).
         """
         os.makedirs(self.static_dir, exist_ok=True)
+        is_reference = model_id in _REFERENCE_MODELS
 
         if image_url:
-            model = _MODEL_IMAGE_TO_VIDEO
-            params: dict = {
-                "prompt": prompt,
-                "image": image_url,
-                "duration": duration,
-            }
+            model = model_id
+            if is_reference:
+                params: dict = {
+                    "prompt": prompt,
+                    "images": [image_url],
+                    "duration": duration,
+                    "aspect_ratio": aspect_ratio,
+                    "sound": False,
+                }
+            else:
+                params = {
+                    "prompt": prompt,
+                    "image": image_url,
+                    "duration": duration,
+                }
+                if negative_prompt:
+                    params["negative_prompt"] = negative_prompt
         else:
-            model = _MODEL_TEXT_TO_VIDEO
+            # Text-to-video fallback always uses v3.0 Pro
+            model = _V3_PRO_T2V
             params = {
                 "prompt": prompt,
                 "duration": duration,
                 "aspect_ratio": aspect_ratio,
             }
 
-        if negative_prompt:
-            params["negative_prompt"] = negative_prompt
-
-        logger.info(f"Kling v3 generating clip | model={model} | {duration}s")
+        logger.info(f"Kling generating clip | model={model} | {duration}s")
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
 
@@ -76,21 +124,31 @@ class KlingService:
         anchor_photo_urls: list[str],
         clip_duration: int = 10,
         negative_prompt: str = "",
+        model_id: str = _V3_PRO_I2V,
     ) -> list[str]:
-        """Generate multiple clips with last-frame continuity anchoring."""
+        """Generate multiple clips.
+
+        For Image-to-Video models: extracts last frame after each clip and uses
+        it as the anchor for the next clip (visual continuity).
+        For Reference-to-Video models: always uses the original anchor photo
+        because the reference defines character identity, not the starting frame.
+        """
+        is_reference = model_id in _REFERENCE_MODELS
         clips: list[str] = []
 
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
-            logger.info(f"Kling v3 clip {i + 1}/{len(scene_prompts)}")
+            logger.info(f"Kling clip {i + 1}/{len(scene_prompts)} | model={model_id}")
             clip_path = await self.generate_clip(
                 prompt=prompt,
                 image_url=photo_url,
                 duration=clip_duration,
                 negative_prompt=negative_prompt,
+                model_id=model_id,
             )
             clips.append(clip_path)
 
-            if i < len(scene_prompts) - 1:
+            # Last-frame continuity only for Image-to-Video models
+            if not is_reference and i < len(scene_prompts) - 1:
                 same_photo = anchor_photo_urls[i] == anchor_photo_urls[i + 1]
                 if same_photo:
                     frame_path = await self._extract_last_frame(clip_path)

@@ -184,7 +184,8 @@ async def generate_video_for_model(
     """
     model = (settings.get("video_model") or "seedance").lower()
 
-    if model == "kling":
+    if model in {"kling", "kling_v3_std", "kling_o3_pro", "kling_o3_std",
+                 "kling_o3_pro_ref", "kling_o3_std_ref"}:
         return await _generate_kling(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
@@ -202,7 +203,7 @@ async def generate_video_for_model(
             video_prompt=video_prompt, voiceover_text=voiceover_text,
             image_path=image_path, notify=notify,
         )
-    # Default: seedance
+    # Seedance variants (default)
     return await _generate_seedance(
         gemini=gemini, settings=settings,
         video_prompt=video_prompt, voiceover_text=voiceover_text,
@@ -221,12 +222,17 @@ async def _generate_seedance(
     image_path: str | None,
     notify,
 ) -> dict:
+    from services.seedance import MODEL_IDS as _SEEDANCE_IDS, MODEL_LABELS as _SEEDANCE_LABELS
+    model = (settings.get("video_model") or "seedance").lower()
+    atlas_model_id = _SEEDANCE_IDS.get(model, _SEEDANCE_IDS["seedance"])
+    label = _SEEDANCE_LABELS.get(model, "Seedance 2.0")
+
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     n_clips = max(1, target_duration // 10)
 
     scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
     await notify(
-        f"⏱ Generating <b>Seedance 2.0</b> ({len(scenes)} clip(s) × 10s) — "
+        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × 10s) — "
         "each clip takes ~3-5 min…"
     )
 
@@ -239,16 +245,17 @@ async def _generate_seedance(
             scene_prompts=scenes,
             anchor_photo_urls=anchor_urls,
             clip_duration=10,
+            model_id=atlas_model_id,
         )
     else:
         clips = []
         for i, prompt in enumerate(scenes):
-            await notify(f"🎞 Seedance clip {i + 1}/{len(scenes)}…")
-            clip = await seedance.generate_clip(prompt=prompt, duration=10)
+            await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
+            clip = await seedance.generate_clip(prompt=prompt, duration=10, model_id=atlas_model_id)
             clips.append(clip)
 
     raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
-    await notify("✅ Seedance clips ready")
+    await notify(f"✅ {label} clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
 
@@ -270,13 +277,18 @@ async def _generate_kling(
     image_path: str | None,
     notify,
 ) -> dict:
+    from services.kling import MODEL_IDS as _KLING_IDS, MODEL_LABELS as _KLING_LABELS
+    model = (settings.get("video_model") or "kling").lower()
+    atlas_model_id = _KLING_IDS.get(model, _KLING_IDS["kling"])
+    label = _KLING_LABELS.get(model, "Kling")
+
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     n_clips = max(1, target_duration // 10)
     negative_prompt = settings.get("negative_prompt") or ""
 
     scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
     await notify(
-        f"⏱ Generating <b>Kling v3 Pro</b> ({len(scenes)} clip(s) × 10s) — "
+        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × 10s) — "
         "each clip takes ~2-4 min…"
     )
 
@@ -290,18 +302,21 @@ async def _generate_kling(
             anchor_photo_urls=anchor_urls,
             clip_duration=10,
             negative_prompt=negative_prompt,
+            model_id=atlas_model_id,
         )
     else:
         clips = []
         for i, prompt in enumerate(scenes):
-            await notify(f"🎞 Kling clip {i + 1}/{len(scenes)}…")
+            await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
             clip = await kling.generate_clip(
-                prompt=prompt, duration=10, negative_prompt=negative_prompt,
+                prompt=prompt, duration=10,
+                negative_prompt=negative_prompt,
+                model_id=atlas_model_id,
             )
             clips.append(clip)
 
     raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
-    await notify("✅ Kling clips ready")
+    await notify(f"✅ {label} clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
 

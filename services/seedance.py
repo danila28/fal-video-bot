@@ -1,11 +1,16 @@
-"""Seedance 2.0 video generation via Atlas Cloud.
+"""Seedance video generation via Atlas Cloud.
 
-Flow (identical to Kling / PixVerse services):
-  1. Upload reference photo to Atlas Cloud storage
-  2. Generate clips via image-to-video (or text-to-video if no photo)
-  3. Return local MP4 paths for concatenation in post-processing
+Supported models (set via settings video_model):
+  seedance          → Seedance 2.0       Image-to-Video  (current default)
+  seedance_fast     → Seedance 2.0 Fast  Image-to-Video
+  seedance_ref      → Seedance 2.0       Reference-to-Video
+  seedance_fast_ref → Seedance 2.0 Fast  Reference-to-Video
 
-Clip duration: 10 s (standard Seedance unit).
+Reference-to-Video models use `image_urls` (array) instead of `image_url`,
+and the prompt must reference the image with `@Image1`. Last-frame continuity
+is skipped for them (reference defines character identity, not starting frame).
+
+Clip duration: 10 s (standard unit for all Seedance variants).
 """
 
 import asyncio
@@ -17,8 +22,35 @@ from services.atlas import AtlasClient
 
 logger = logging.getLogger(__name__)
 
-_MODEL_IMAGE_TO_VIDEO = "bytedance/seedance-2.0/image-to-video"
-_MODEL_TEXT_TO_VIDEO  = "bytedance/seedance-2.0/text-to-video"
+# ── Atlas Cloud model IDs ─────────────────────────────────────────────────────
+
+_I2V       = "bytedance/seedance-2.0/image-to-video"
+_T2V       = "bytedance/seedance-2.0/text-to-video"
+_FAST_I2V  = "bytedance/seedance-2.0/fast/image-to-video"
+_REF       = "bytedance/seedance-2.0/reference-to-video"
+_FAST_REF  = "bytedance/seedance-2.0/fast/reference-to-video"
+
+# Backwards-compat aliases
+_MODEL_IMAGE_TO_VIDEO = _I2V
+_MODEL_TEXT_TO_VIDEO  = _T2V
+
+# Map from settings model name → Atlas model ID
+MODEL_IDS: dict[str, str] = {
+    "seedance":          _I2V,
+    "seedance_fast":     _FAST_I2V,
+    "seedance_ref":      _REF,
+    "seedance_fast_ref": _FAST_REF,
+}
+
+# Human-readable labels used in notify messages
+MODEL_LABELS: dict[str, str] = {
+    "seedance":          "Seedance 2.0",
+    "seedance_fast":     "Seedance 2.0 Fast",
+    "seedance_ref":      "Seedance 2.0 Reference",
+    "seedance_fast_ref": "Seedance 2.0 Fast Reference",
+}
+
+_REFERENCE_MODELS = {_REF, _FAST_REF}
 
 
 class SeedanceService:
@@ -39,23 +71,41 @@ class SeedanceService:
         duration: int = 10,
         aspect_ratio: str = "9:16",
         resolution: str = "720p",
+        model_id: str = _I2V,
     ) -> str:
-        """Generate one clip. Returns local path to downloaded MP4."""
+        """Generate one clip. Returns local path to downloaded MP4.
+
+        Reference models use `image_urls` (array) + `@Image1` in prompt.
+        Image-to-Video models use `image_url` (single string) + `ratio` param.
+        """
         os.makedirs(self.static_dir, exist_ok=True)
+        is_reference = model_id in _REFERENCE_MODELS
 
         if image_url:
-            model = _MODEL_IMAGE_TO_VIDEO
-            params = {
-                "prompt": prompt,
-                "image_url": image_url,
-                "duration": duration,
-                "ratio": aspect_ratio,
-                "resolution": resolution,
-                "generate_audio": False,
-                "watermark": False,
-            }
+            model = model_id
+            if is_reference:
+                ref_prompt = f"@Image1 {prompt}" if not prompt.startswith("@Image1") else prompt
+                params = {
+                    "prompt": ref_prompt,
+                    "image_urls": [image_url],
+                    "duration": duration,
+                    "aspect_ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "generate_audio": False,
+                    "watermark": False,
+                }
+            else:
+                params = {
+                    "prompt": prompt,
+                    "image_url": image_url,
+                    "duration": duration,
+                    "ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "generate_audio": False,
+                    "watermark": False,
+                }
         else:
-            model = _MODEL_TEXT_TO_VIDEO
+            model = _T2V
             params = {
                 "prompt": prompt,
                 "duration": duration,
@@ -74,13 +124,16 @@ class SeedanceService:
         scene_prompts: list[str],
         anchor_photo_urls: list[str],
         clip_duration: int = 10,
+        model_id: str = _I2V,
     ) -> list[str]:
-        """Generate multiple clips. Each clip uses its own anchor photo.
+        """Generate multiple clips.
 
-        After each clip the last frame is extracted and used as the image_url
-        for the next clip to maintain visual continuity — but only if the
-        clip's dedicated photo is the same as the previous one.
+        For Image-to-Video models: extracts last frame after each clip and uses
+        it as the anchor for the next clip (visual continuity).
+        For Reference-to-Video models: always uses the original anchor photo
+        because the reference defines character identity, not the starting frame.
         """
+        is_reference = model_id in _REFERENCE_MODELS
         clips: list[str] = []
 
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
@@ -89,10 +142,12 @@ class SeedanceService:
                 prompt=prompt,
                 image_url=photo_url,
                 duration=clip_duration,
+                model_id=model_id,
             )
             clips.append(clip_path)
 
-            if i < len(scene_prompts) - 1:
+            # Last-frame continuity only for Image-to-Video models
+            if not is_reference and i < len(scene_prompts) - 1:
                 same_photo = anchor_photo_urls[i] == anchor_photo_urls[i + 1]
                 if same_photo:
                     frame_path = await self._extract_last_frame(clip_path)
