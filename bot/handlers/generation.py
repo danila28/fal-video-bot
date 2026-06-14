@@ -160,6 +160,7 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
             prompt=image_prompt,
             model=settings.get("image_model") or "imagen-4.0-fast-generate-001",
             video_model=settings.get("video_model") or "seedance",
+            notify=callback.message.answer,
         )
 
         await state.update_data(image_path=image_path, image_prompt=image_prompt)
@@ -237,6 +238,7 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
             prompt=image_prompt,
             model=settings.get("image_model") or "imagen-4.0-fast-generate-001",
             video_model=settings.get("video_model") or "seedance",
+            notify=callback.message.answer,
         )
         await state.update_data(image_path=image_path, image_prompt=image_prompt)
         await callback.message.answer_photo(FSInputFile(image_path), caption="image")

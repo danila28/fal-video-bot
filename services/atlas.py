@@ -61,7 +61,8 @@ class AtlasClient:
                         )
                     result = await resp.json()
 
-        url = result.get("url") or (result.get("data") or {}).get("url")
+        data = result.get("data") or {}
+        url = result.get("url") or data.get("url") or data.get("download_url")
         if not url:
             raise Exception(f"No URL in Atlas upload response: {result}")
         logger.info(f"Uploaded {file_path} → {url}")

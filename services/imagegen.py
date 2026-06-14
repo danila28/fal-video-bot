@@ -197,12 +197,15 @@ class ImageGenService:
         prompt: str,
         model: str = _IMAGEN_MODEL_DEFAULT,
         video_model: str = "seedance",
+        notify=None,
     ) -> str:
         """Generate ONE photo from a prompt.
 
         `model` picks the primary backend; FLUX 2 Pro is used as automatic
         fallback when the primary backend fails with a server error.
         `video_model` selects the output aspect ratio.
+        `notify` is an optional async callable (e.g. message.answer) called
+        when fallback to FLUX 2 Pro is triggered.
         """
         aspect_ratio = self._aspect_for_video_model(video_model)
         logger.info(
@@ -226,4 +229,6 @@ class ImageGenService:
             return await self._generate_via_imagen(prompt, _IMAGEN_MODEL_DEFAULT, aspect_ratio)
         except Exception as e:
             logger.warning(f"Primary image backend failed ({e}); falling back to FLUX 2 Pro…")
+            if notify is not None:
+                await notify("⚠️ Image model unavailable, switched to FLUX 2 Pro automatically.")
             return await self._generate_via_flux(prompt, aspect_ratio)
