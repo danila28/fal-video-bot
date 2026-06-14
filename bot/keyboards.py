@@ -72,9 +72,9 @@ def get_accounts_keyboard(accounts: list[dict]):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_duration_keyboard(current: int = 15):
+def get_duration_keyboard(current: int = 20):
     rows = []
-    for d in [15, 30, 45, 60]:
+    for d in [20, 40, 60]:
         mark = "✅ " if d == current else ""
         rows.append([InlineKeyboardButton(
             text=f"{mark}{d}s",
@@ -169,7 +169,7 @@ def get_settings_keyboard():
 def get_advanced_settings_keyboard(
     subtitles_default_on: bool = True,
     grade_on: bool = False,
-    target_duration: int = 15,
+    target_duration: int = 20,
     utc_offset: int = 0,
     sfx_on: bool = False,
     video_speed: float = 1.0,

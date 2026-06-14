@@ -3,6 +3,7 @@
 import asyncio
 import html
 import logging
+import math
 import os
 import re
 
@@ -30,12 +31,11 @@ _NATIVE_AUDIO_MODELS = {"happy_horse"}
 # ── Duration config ──────────────────────────────────────────────────────────
 
 DURATION_SEGMENTS: dict[int, tuple[int, int, int]] = {
-    15: (8, 1, 7),
-    30: (8, 3, 7),
-    45: (8, 5, 7),
-    60: (8, 7, 7),
+    20: (2, 0, 0),
+    40: (4, 0, 0),
+    60: (6, 0, 0),
 }
-DEFAULT_TARGET_DURATION = 15
+DEFAULT_TARGET_DURATION = 20
 
 
 # ── State helpers ────────────────────────────────────────────────────────────
@@ -228,9 +228,9 @@ async def _generate_seedance(
     label = _SEEDANCE_LABELS.get(model, "Seedance 2.0")
 
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, target_duration // 10)
+    n_clips = max(1, math.ceil(target_duration / 10))
 
-    scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
+    scenes = _split_scene_into_shots(video_prompt, n_clips)
     await notify(
         f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × 10s) — "
         "each clip takes ~3-5 min…"
@@ -283,10 +283,10 @@ async def _generate_kling(
     label = _KLING_LABELS.get(model, "Kling")
 
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, target_duration // 10)
+    n_clips = max(1, math.ceil(target_duration / 10))
     negative_prompt = settings.get("negative_prompt") or ""
 
-    scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
+    scenes = _split_scene_into_shots(video_prompt, n_clips)
     await notify(
         f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × 10s) — "
         "each clip takes ~2-4 min…"
@@ -392,9 +392,9 @@ async def _generate_pixverse(
     notify,
 ) -> dict:
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, target_duration // 5)
+    n_clips = max(1, math.ceil(target_duration / 5))
 
-    scenes = _split_voiceover_into_scenes(voiceover_text or video_prompt, n_clips)
+    scenes = _split_scene_into_shots(video_prompt, n_clips)
     await notify(
         f"⏱ Generating <b>PixVerse V4.5</b> ({len(scenes)} clip(s) × 5s) — "
         "each clip takes ~1-3 min…"
@@ -457,6 +457,32 @@ async def _synthesize_tts(
 
 
 # ── Scene splitting helpers ───────────────────────────────────────────────────
+
+def _split_scene_into_shots(video_prompt: str, target_count: int) -> list[str]:
+    """Split Scene section by 'Cut to:' into per-clip visual prompts.
+
+    Falls back to voiceover sentence splitting when the scene has no cuts.
+    """
+    scene = _strip_voiceover(video_prompt)
+    # Remove leading "Scene:" label
+    scene = re.sub(r'^scene\s*:\s*', '', scene.strip(), flags=re.IGNORECASE)
+
+    shots = [s.strip() for s in re.split(r'\bcut\s+to\s*:\s*', scene, flags=re.IGNORECASE) if s.strip()]
+
+    if not shots:
+        return _split_voiceover_into_scenes(video_prompt, target_count)
+
+    if len(shots) >= target_count:
+        # Merge excess shots into the last bucket
+        result = shots[:target_count - 1]
+        result.append(" Cut to: ".join(shots[target_count - 1:]))
+        return result
+
+    # Too few shots — pad by repeating the last one
+    while len(shots) < target_count:
+        shots.append(shots[-1])
+    return shots
+
 
 def _split_voiceover_into_scenes(voiceover: str, target_count: int) -> list[str]:
     sentences = re.split(r'(?<=[.!?])\s+', voiceover.strip())
