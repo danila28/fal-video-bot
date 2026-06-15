@@ -468,29 +468,66 @@ class GeminiService:
             logger.warning(f"extract_last_frame failed (non-fatal): {e}")
             return ""
 
-    async def concat_videos(self, segment_paths: list[str]) -> str:
+    async def concat_videos(self, segment_paths: list[str], crossfade: float = 0.5) -> str:
         if len(segment_paths) == 1:
             return segment_paths[0]
 
         os.makedirs(self.static_dir, exist_ok=True)
-        concat_list = os.path.join(self.static_dir, f"{uuid.uuid4()}_list.txt")
         output_path = os.path.join(self.static_dir, f"{uuid.uuid4()}.mp4")
 
-        with open(concat_list, "w", encoding="utf-8") as fh:
-            for p in segment_paths:
-                fh.write(f"file '{p.replace(chr(92), '/')}'\n")
+        if crossfade <= 0 or len(segment_paths) < 2:
+            concat_list = os.path.join(self.static_dir, f"{uuid.uuid4()}_list.txt")
+            with open(concat_list, "w", encoding="utf-8") as fh:
+                for p in segment_paths:
+                    fh.write(f"file '{p.replace(chr(92), '/')}'\n")
 
-        def _run():
+            def _run_simple():
+                (
+                    ffmpeg
+                    .input(concat_list, format="concat", safe=0)
+                    .output(output_path, vcodec="copy", acodec="aac")
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+            await asyncio.to_thread(_run_simple)
+            logger.info(f"Concatenated {len(segment_paths)} segments → {output_path}")
+            return output_path
+
+        # Crossfade via xfade filter — requires re-encoding
+        durations = await asyncio.gather(
+            *[asyncio.to_thread(self._probe_duration, p) for p in segment_paths]
+        )
+
+        def _run_xfade():
+            inputs = [ffmpeg.input(p) for p in segment_paths]
+            v_streams = [inp.video for inp in inputs]
+            a_streams = [inp.audio for inp in inputs]
+
+            # Chain xfade filters between each pair of clips
+            offset = durations[0] - crossfade
+            v = ffmpeg.filter([v_streams[0], v_streams[1]], "xfade",
+                              transition="fade", duration=crossfade, offset=offset)
+            a = ffmpeg.filter([a_streams[0], a_streams[1]], "acrossfade",
+                              duration=crossfade)
+
+            for i in range(2, len(segment_paths)):
+                offset += durations[i - 1] - crossfade
+                v = ffmpeg.filter([v, v_streams[i]], "xfade",
+                                  transition="fade", duration=crossfade, offset=offset)
+                a = ffmpeg.filter([a, a_streams[i]], "acrossfade",
+                                  duration=crossfade)
+
             (
                 ffmpeg
-                .input(concat_list, format="concat", safe=0)
-                .output(output_path, vcodec="copy", acodec="aac")
+                .output(v, a, output_path,
+                        vcodec="libx264", acodec="aac",
+                        pix_fmt="yuv420p", crf=18)
                 .overwrite_output()
                 .run(quiet=True)
             )
 
-        await asyncio.to_thread(_run)
-        logger.info(f"Concatenated {len(segment_paths)} segments → {output_path}")
+        await asyncio.to_thread(_run_xfade)
+        logger.info(f"Concatenated {len(segment_paths)} segments with {crossfade}s crossfade → {output_path}")
         return output_path
 
     async def append_outro(self, video_path: str, outro_path: str) -> str:

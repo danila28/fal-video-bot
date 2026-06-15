@@ -138,8 +138,20 @@ class SeedanceService:
 
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
             logger.info(f"Generating Seedance clip {i + 1}/{len(scene_prompts)}")
+
+            # For Reference models: add continuation hint to clips 2+ so the model
+            # matches the lighting, background and mood of the previous clip.
+            if is_reference and i > 0:
+                effective_prompt = (
+                    "Seamlessly continuing from previous scene — "
+                    "same lighting, same background, same camera angle, smooth action flow. "
+                    + prompt
+                )
+            else:
+                effective_prompt = prompt
+
             clip_path = await self.generate_clip(
-                prompt=prompt,
+                prompt=effective_prompt,
                 image_url=photo_url,
                 duration=clip_duration,
                 model_id=model_id,

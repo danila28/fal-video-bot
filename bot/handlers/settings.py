@@ -264,13 +264,15 @@ async def settings_duration(callback: CallbackQuery):
     current = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     await callback.message.answer(
         f"⏱ Current target duration: <b>{current}s</b>\n\n"
-        "<b>Seedance / Kling</b> — splits into 10-second clips:\n"
-        "• 20s → 2 clips\n"
-        "• 40s → 4 clips\n"
-        "• 60s → 6 clips\n\n"
+        "<b>Seedance / Kling</b> — splits into 15-second clips:\n"
+        "• 15s → 1 clip\n"
+        "• 30s → 2 clips\n"
+        "• 45s → 3 clips\n"
+        "• 60s → 4 clips\n\n"
         "<b>PixVerse</b> — splits into 5-second clips:\n"
-        "• 20s → 4 clips\n"
-        "• 40s → 8 clips\n"
+        "• 15s → 3 clips\n"
+        "• 30s → 6 clips\n"
+        "• 45s → 9 clips\n"
         "• 60s → 12 clips",
         parse_mode="HTML",
         reply_markup=get_duration_keyboard(current),

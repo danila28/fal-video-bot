@@ -31,11 +31,12 @@ _NATIVE_AUDIO_MODELS = {"happy_horse"}
 # ── Duration config ──────────────────────────────────────────────────────────
 
 DURATION_SEGMENTS: dict[int, tuple[int, int, int]] = {
-    20: (2, 0, 0),
-    40: (4, 0, 0),
-    60: (6, 0, 0),
+    15: (1, 0, 0),
+    30: (2, 0, 0),
+    45: (3, 0, 0),
+    60: (4, 0, 0),
 }
-DEFAULT_TARGET_DURATION = 20
+DEFAULT_TARGET_DURATION = 30
 
 
 # ── State helpers ────────────────────────────────────────────────────────────
@@ -228,11 +229,12 @@ async def _generate_seedance(
     label = _SEEDANCE_LABELS.get(model, "Seedance 2.0")
 
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, math.ceil(target_duration / 10))
+    clip_dur = _clip_duration_for_model(model)
+    n_clips = max(1, math.ceil(target_duration / clip_dur))
 
     scenes = _split_scene_into_shots(video_prompt, n_clips)
     await notify(
-        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × 10s) — "
+        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s) — "
         "each clip takes ~3-5 min…"
     )
 
@@ -244,14 +246,14 @@ async def _generate_seedance(
         clips = await seedance.generate_clips(
             scene_prompts=scenes,
             anchor_photo_urls=anchor_urls,
-            clip_duration=10,
+            clip_duration=clip_dur,
             model_id=atlas_model_id,
         )
     else:
         clips = []
         for i, prompt in enumerate(scenes):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
-            clip = await seedance.generate_clip(prompt=prompt, duration=10, model_id=atlas_model_id)
+            clip = await seedance.generate_clip(prompt=prompt, duration=clip_dur, model_id=atlas_model_id)
             clips.append(clip)
 
     raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
@@ -283,12 +285,13 @@ async def _generate_kling(
     label = _KLING_LABELS.get(model, "Kling")
 
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, math.ceil(target_duration / 10))
+    clip_dur = _clip_duration_for_model(model)
+    n_clips = max(1, math.ceil(target_duration / clip_dur))
     negative_prompt = settings.get("negative_prompt") or ""
 
     scenes = _split_scene_into_shots(video_prompt, n_clips)
     await notify(
-        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × 10s) — "
+        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s) — "
         "each clip takes ~2-4 min…"
     )
 
@@ -300,7 +303,7 @@ async def _generate_kling(
         clips = await kling.generate_clips(
             scene_prompts=scenes,
             anchor_photo_urls=anchor_urls,
-            clip_duration=10,
+            clip_duration=clip_dur,
             negative_prompt=negative_prompt,
             model_id=atlas_model_id,
         )
@@ -309,7 +312,7 @@ async def _generate_kling(
         for i, prompt in enumerate(scenes):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
             clip = await kling.generate_clip(
-                prompt=prompt, duration=10,
+                prompt=prompt, duration=clip_dur,
                 negative_prompt=negative_prompt,
                 model_id=atlas_model_id,
             )
@@ -515,27 +518,55 @@ def _strip_voiceover(video_prompt: str) -> str:
 
 # ── Prompt builders ─────────────────────────────────────────────────────────
 
+def _clip_duration_for_model(video_model: str) -> int:
+    """Return the fixed clip length (seconds) for the given video model."""
+    if video_model == "pixverse":
+        return 5
+    if video_model == "happy_horse":
+        return 15
+    # kling (all variants) and seedance (all variants) support 15s clips
+    return 15
+
+
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
     base_sys = settings.get("system_video_prompt") or ""
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, math.ceil(target_duration / 10))
-    target_words = max(20, int(target_duration * 2.3))
+    video_model = (settings.get("video_model") or "seedance").lower()
+    clip_duration = _clip_duration_for_model(video_model)
+    is_single_clip = video_model == "happy_horse"
+
+    n_clips = 1 if is_single_clip else max(1, math.ceil(target_duration / clip_duration))
+    actual_duration = n_clips * clip_duration
+    target_words = max(20, int(actual_duration * 2.3))
     scene_word_limit = n_clips * 30
+
+    if is_single_clip:
+        scene_instruction = (
+            f"Scene: Describe ONE continuous shot (~{clip_duration} seconds). "
+            f"Shot size + character action + camera movement. No cuts. "
+            f"Max {scene_word_limit} words."
+        )
+        shots_rule = "- Write exactly ONE shot in the Scene — no 'Cut to:'"
+    else:
+        scene_instruction = (
+            f"Scene: Describe EXACTLY {n_clips} camera shot(s) separated by 'Cut to:'. "
+            f"Each shot covers ~{clip_duration} seconds of the story and must show what is happening "
+            f"at that moment in the narration. "
+            f"Format each shot as: shot size + character action + camera movement.\n"
+            f"Shot sizes: wide shot, medium shot, close-up, extreme close-up, overhead shot, low angle shot.\n"
+            f"Camera moves: slow push in, dolly back, rack focus, pan left/right, crane up, handheld, static.\n"
+            f"Max {scene_word_limit} words for the Scene section."
+        )
+        shots_rule = f"- Write EXACTLY {n_clips} shots in the Scene — no more, no less"
 
     _FORMAT_SUFFIX = (
         f"\n\n--- OUTPUT FORMAT (mandatory) ---\n"
         f"Write TWO sections only:\n\n"
-        f"Scene: Describe EXACTLY {n_clips} camera shot(s) separated by 'Cut to:'. "
-        f"Each shot covers ~10 seconds of the story and must show what is happening "
-        f"at that moment in the narration. "
-        f"Format each shot as: shot size + character action + camera movement.\n"
-        f"Shot sizes: wide shot, medium shot, close-up, extreme close-up, overhead shot, low angle shot.\n"
-        f"Camera moves: slow push in, dolly back, rack focus, pan left/right, crane up, handheld, static.\n"
-        f"Max {scene_word_limit} words for the Scene section.\n\n"
+        f"{scene_instruction}\n\n"
         f'Voiceover: "narration text of approximately {target_words} words '
-        f'({target_duration} seconds at natural talking pace)"\n\n'
+        f'({actual_duration} seconds at natural talking pace)"\n\n'
         f"Rules:\n"
-        f"- Write EXACTLY {n_clips} shots in the Scene — no more, no less\n"
+        f"{shots_rule}\n"
         f"- Each shot must sync with what is spoken in the Voiceover at that moment\n"
         f"- Scene must depict EXACTLY the topic from the input\n"
         f"- Do NOT use markdown (>, **, *)\n"
