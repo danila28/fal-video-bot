@@ -524,7 +524,9 @@ def _clip_duration_for_model(video_model: str) -> int:
         return 5
     if video_model == "happy_horse":
         return 15
-    # kling (all variants) and seedance (all variants) support 15s clips
+    if video_model.startswith("seedance"):
+        return 10
+    # kling (all variants) support 15s clips
     return 15
 
 
