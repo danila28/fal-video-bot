@@ -584,6 +584,8 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
         f'({actual_duration} seconds at natural talking pace)"\n\n'
         f"Rules:\n"
         f"{shots_rule}\n"
+        f"- Scene description MUST be written in English regardless of the input language\n"
+        f"- Voiceover MUST be written in the same language as the input\n"
         f"- Each shot must sync with what is spoken in the Voiceover at that moment\n"
         f"- Scene must depict EXACTLY the topic from the input\n"
         f"- Do NOT use markdown (>, **, *)\n"

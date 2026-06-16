@@ -64,7 +64,8 @@ async def _begin_generation(message: Message, state: FSMContext):
     if settings.get("text_model") is None:
         await message.answer("You must select a LLM to generate prompts\nTap ⚙️ Settings → 🧠 Text model")
         return
-    if settings.get("image_model") is None:
+    video_model_check = settings.get("video_model") or ""
+    if settings.get("image_model") is None and video_model_check not in _T2V_VIDEO_MODELS:
         await message.answer("You must select an image model\nTap ⚙️ Settings → 🖼 Image model")
         return
     if settings.get("video_model") is None:
@@ -199,7 +200,7 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
 
         image_path = await imagegen.generate(
             prompt=image_prompt,
-            model=settings.get("image_model") or "imagen-4.0-fast-generate-001",
+            model=settings.get("image_model") or "black-forest-labs/flux-2-pro/text-to-image",
             video_model=video_model or "seedance",
             notify=callback.message.answer,
         )
@@ -277,7 +278,7 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
         image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini)
         image_path = await imagegen.generate(
             prompt=image_prompt,
-            model=settings.get("image_model") or "imagen-4.0-fast-generate-001",
+            model=settings.get("image_model") or "black-forest-labs/flux-2-pro/text-to-image",
             video_model=settings.get("video_model") or "seedance",
             notify=callback.message.answer,
         )

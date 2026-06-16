@@ -54,11 +54,9 @@ class GeminiService:
 
     def get_image_models(self):
         return [
-            {"name": "imagen-4.0-fast-generate-001",                    "price": "💰 ~$0.02/img"},
-            {"name": "gemini-2.5-flash-image",                          "price": "💰 ~$0.04/img"},
-            {"name": "black-forest-labs/flux-2-pro/text-to-image",      "price": "⚖️  ~$0.05/img"},
-            {"name": "black-forest-labs/flux-kontext-pro-text-to-image", "price": "⚖️  ~$0.05/img · персонаж"},
-            {"name": "ideogram/ideogram-v3/text-to-image",              "price": "🎨 ~$0.08/img · стиль"},
+            {"name": "black-forest-labs/flux-2-pro/text-to-image",       "price": "💰 ~$0.05/img · универсальный"},
+            {"name": "black-forest-labs/flux-kontext-pro-text-to-image",  "price": "⚖️  ~$0.05/img · консистентность персонажа"},
+            {"name": "ideogram/ideogram-v3/text-to-image",               "price": "🎨 ~$0.08/img · стиль и арт"},
         ]
 
     def get_video_models(self):
