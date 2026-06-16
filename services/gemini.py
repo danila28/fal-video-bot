@@ -470,12 +470,21 @@ class GeminiService:
             logger.warning(f"extract_last_frame failed (non-fatal): {e}")
             return ""
 
+    @staticmethod
+    def _has_audio(video_path: str) -> bool:
+        try:
+            info = ffmpeg.probe(video_path)
+            return any(s.get("codec_type") == "audio" for s in info.get("streams", []))
+        except Exception:
+            return False
+
     async def concat_videos(self, segment_paths: list[str], crossfade: float = 0.5) -> str:
         if len(segment_paths) == 1:
             return segment_paths[0]
 
         os.makedirs(self.static_dir, exist_ok=True)
         output_path = os.path.join(self.static_dir, f"{uuid.uuid4()}.mp4")
+        has_audio = await asyncio.to_thread(self._has_audio, segment_paths[0])
 
         if crossfade <= 0 or len(segment_paths) < 2:
             concat_list = os.path.join(self.static_dir, f"{uuid.uuid4()}_list.txt")
@@ -484,13 +493,20 @@ class GeminiService:
                     fh.write(f"file '{p.replace(chr(92), '/')}'\n")
 
             def _run_simple():
-                (
-                    ffmpeg
-                    .input(concat_list, format="concat", safe=0)
-                    .output(output_path, vcodec="copy", acodec="aac")
-                    .overwrite_output()
-                    .run(quiet=True)
-                )
+                out_kwargs = {"vcodec": "copy"}
+                if has_audio:
+                    out_kwargs["acodec"] = "aac"
+                try:
+                    (
+                        ffmpeg
+                        .input(concat_list, format="concat", safe=0)
+                        .output(output_path, **out_kwargs)
+                        .overwrite_output()
+                        .run(quiet=True)
+                    )
+                except ffmpeg.Error as e:
+                    logger.error(f"concat_videos simple failed:\n{e.stderr.decode(errors='replace') if e.stderr else e}")
+                    raise
             await asyncio.to_thread(_run_simple)
             logger.info(f"Concatenated {len(segment_paths)} segments → {output_path}")
             return output_path
@@ -503,30 +519,44 @@ class GeminiService:
         def _run_xfade():
             inputs = [ffmpeg.input(p) for p in segment_paths]
             v_streams = [inp.video for inp in inputs]
-            a_streams = [inp.audio for inp in inputs]
 
-            # Chain xfade filters between each pair of clips
             offset = durations[0] - crossfade
             v = ffmpeg.filter([v_streams[0], v_streams[1]], "xfade",
                               transition="fade", duration=crossfade, offset=offset)
-            a = ffmpeg.filter([a_streams[0], a_streams[1]], "acrossfade",
-                              duration=crossfade)
+            if has_audio:
+                a_streams = [inp.audio for inp in inputs]
+                a = ffmpeg.filter([a_streams[0], a_streams[1]], "acrossfade",
+                                  duration=crossfade)
 
             for i in range(2, len(segment_paths)):
                 offset += durations[i - 1] - crossfade
                 v = ffmpeg.filter([v, v_streams[i]], "xfade",
                                   transition="fade", duration=crossfade, offset=offset)
-                a = ffmpeg.filter([a, a_streams[i]], "acrossfade",
-                                  duration=crossfade)
+                if has_audio:
+                    a = ffmpeg.filter([a, a_streams[i]], "acrossfade",
+                                      duration=crossfade)
 
-            (
-                ffmpeg
-                .output(v, a, output_path,
-                        vcodec="libx264", acodec="aac",
-                        pix_fmt="yuv420p", crf=18)
-                .overwrite_output()
-                .run(quiet=True)
-            )
+            try:
+                if has_audio:
+                    (
+                        ffmpeg
+                        .output(v, a, output_path,
+                                vcodec="libx264", acodec="aac",
+                                pix_fmt="yuv420p", crf=18)
+                        .overwrite_output()
+                        .run(quiet=True)
+                    )
+                else:
+                    (
+                        ffmpeg
+                        .output(v, output_path,
+                                vcodec="libx264", pix_fmt="yuv420p", crf=18)
+                        .overwrite_output()
+                        .run(quiet=True)
+                    )
+            except ffmpeg.Error as e:
+                logger.error(f"concat_videos xfade failed:\n{e.stderr.decode(errors='replace') if e.stderr else e}")
+                raise
 
         await asyncio.to_thread(_run_xfade)
         logger.info(f"Concatenated {len(segment_paths)} segments with {crossfade}s crossfade → {output_path}")

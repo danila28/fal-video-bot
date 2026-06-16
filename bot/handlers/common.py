@@ -265,7 +265,7 @@ async def _generate_seedance(
             clip = await seedance.generate_clip(prompt=effective, duration=clip_dur, model_id=atlas_model_id)
             clips.append(clip)
 
-    raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
+    raw_video = await gemini.concat_videos(clips, crossfade=0) if len(clips) > 1 else clips[0]
     await notify(f"✅ {label} clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -333,7 +333,7 @@ async def _generate_kling(
             )
             clips.append(clip)
 
-    raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
+    raw_video = await gemini.concat_videos(clips, crossfade=0) if len(clips) > 1 else clips[0]
     await notify(f"✅ {label} clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -435,7 +435,7 @@ async def _generate_pixverse(
             clip = await pixverse.generate_clip(prompt=prompt, duration=5)
             clips.append(clip)
 
-    raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
+    raw_video = await gemini.concat_videos(clips, crossfade=0) if len(clips) > 1 else clips[0]
     await notify("✅ PixVerse clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -555,7 +555,7 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
     n_clips = 1 if is_single_clip else max(1, math.ceil(target_duration / clip_duration))
     actual_duration = n_clips * clip_duration
     target_words = max(20, int(actual_duration * 2.3))
-    scene_word_limit = n_clips * 30
+    scene_word_limit = n_clips * 50
 
     if is_single_clip:
         scene_instruction = (

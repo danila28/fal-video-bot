@@ -74,7 +74,7 @@ async def _begin_generation(message: Message, state: FSMContext):
     if settings.get("system_plot_prompt") is None:
         await message.answer("A system prompt must be set for idea/plot\nTap ⚙️ Settings → 📝 Plot prompt")
         return
-    if settings.get("system_image_prompt") is None:
+    if settings.get("system_image_prompt") is None and video_model_check not in _T2V_VIDEO_MODELS:
         await message.answer("A system prompt must be set for image\nTap ⚙️ Settings → 🖼 Image prompt")
         return
 
