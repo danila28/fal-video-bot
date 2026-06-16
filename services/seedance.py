@@ -37,6 +37,7 @@ _MODEL_TEXT_TO_VIDEO  = _T2V
 # Map from settings model name → Atlas model ID
 MODEL_IDS: dict[str, str] = {
     "seedance":          _I2V,
+    "seedance_t2v":      _T2V,
     "seedance_fast":     _FAST_I2V,
     "seedance_ref":      _REF,
     "seedance_fast_ref": _FAST_REF,
@@ -45,6 +46,7 @@ MODEL_IDS: dict[str, str] = {
 # Human-readable labels used in notify messages
 MODEL_LABELS: dict[str, str] = {
     "seedance":          "Seedance 2.0",
+    "seedance_t2v":      "Seedance 2.0 T2V",
     "seedance_fast":     "Seedance 2.0 Fast",
     "seedance_ref":      "Seedance 2.0 Reference",
     "seedance_fast_ref": "Seedance 2.0 Fast Reference",

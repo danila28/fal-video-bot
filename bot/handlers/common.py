@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # Models that produce native audio — TTS must be layered on top, not replace the track.
 _NATIVE_AUDIO_MODELS = {"happy_horse"}
 
+# Models that generate video from text only — no reference image needed or used.
+_T2V_VIDEO_MODELS = {"seedance_t2v", "kling_t2v"}
+
 
 # ── Duration config ──────────────────────────────────────────────────────────
 
@@ -239,8 +242,9 @@ async def _generate_seedance(
     )
 
     seedance = container.inject(SeedanceService)
+    is_t2v = model in _T2V_VIDEO_MODELS
 
-    if image_path and os.path.exists(image_path):
+    if not is_t2v and image_path and os.path.exists(image_path):
         anchor_url = await seedance.upload_photo(image_path)
         anchor_urls = [anchor_url] * len(scenes)
         clips = await seedance.generate_clips(
@@ -253,7 +257,12 @@ async def _generate_seedance(
         clips = []
         for i, prompt in enumerate(scenes):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
-            clip = await seedance.generate_clip(prompt=prompt, duration=clip_dur, model_id=atlas_model_id)
+            effective = (
+                "Seamlessly continuing from previous scene — "
+                "same characters, same lighting, smooth flow. " + prompt
+                if i > 0 else prompt
+            )
+            clip = await seedance.generate_clip(prompt=effective, duration=clip_dur, model_id=atlas_model_id)
             clips.append(clip)
 
     raw_video = await gemini.concat_videos(clips) if len(clips) > 1 else clips[0]
@@ -296,8 +305,9 @@ async def _generate_kling(
     )
 
     kling = container.inject(KlingService)
+    is_t2v = model in _T2V_VIDEO_MODELS
 
-    if image_path and os.path.exists(image_path):
+    if not is_t2v and image_path and os.path.exists(image_path):
         anchor_url = await kling.upload_photo(image_path)
         anchor_urls = [anchor_url] * len(scenes)
         clips = await kling.generate_clips(
@@ -311,8 +321,13 @@ async def _generate_kling(
         clips = []
         for i, prompt in enumerate(scenes):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
+            effective = (
+                "Seamlessly continuing from previous scene — "
+                "same characters, same lighting, smooth flow. " + prompt
+                if i > 0 else prompt
+            )
             clip = await kling.generate_clip(
-                prompt=prompt, duration=clip_dur,
+                prompt=effective, duration=clip_dur,
                 negative_prompt=negative_prompt,
                 model_id=atlas_model_id,
             )

@@ -33,6 +33,7 @@ from utils.consts import allowed_users, generate_hashtags_prompt
 from utils.tg import send_long_message
 from bot.handlers.common import (
     DEFAULT_TARGET_DURATION,
+    _T2V_VIDEO_MODELS,
     _build_image_prompt,
     _build_video_prompt,
     _format_video_prompt_message,
@@ -141,25 +142,65 @@ async def handle_edit_prompt(message: Message, state: FSMContext):
 
 @router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_ok", IsAllowed(allowed_users))
 async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
-    """Prompt OK → generate image (Imagen / Gemini image / FLUX) and show for review."""
+    """Prompt OK → for T2V models skip image and go straight to video prompt;
+    for I2V models generate image and show for review."""
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
+
+    db = container.inject(DBService)
+    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    video_model = settings.get("video_model") or ""
+
+    if video_model in _T2V_VIDEO_MODELS:
+        # ── T2V: no image needed — jump straight to video prompt ──────────────
+        await state.update_data(image_path=None, image_prompt="")
+        await state.update_data(generation_in_progress=True, generation_started_at=time.time())
+        await callback.message.answer("⏳ Generating video prompt…")
+        try:
+            gemini = container.inject(GeminiService)
+            data = await state.get_data()
+            enhance_prompt = data.get("enhance_prompt", "")
+            text_model = settings.get("text_model") or ""
+            video_prompt, hashtags = await asyncio.gather(
+                _build_video_prompt(enhance_prompt, settings, gemini),
+                gemini.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
+            )
+            scene, voiceover = _split_video_prompt(video_prompt, gemini)
+            await state.update_data(
+                video_scene=scene,
+                video_voiceover=voiceover,
+                cached_hashtags=hashtags,
+            )
+            text = _format_video_prompt_message(scene, voiceover)
+            await send_long_message(
+                callback.message, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML"
+            )
+            await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
+        except Exception as e:
+            logger.error(f"Video prompt generation failed (T2V): {e}")
+            await callback.message.answer(
+                f"❌ Error generating prompt: {e}\nTry again.",
+                reply_markup=get_prompt_keyboard(),
+            )
+            await state.set_state(GenerationState.ENHANCE_PROMPT)
+        finally:
+            await state.update_data(generation_in_progress=False)
+        return
+
+    # ── I2V: generate reference image and show for review ────────────────────
     await callback.message.answer("⏳ Generating image…")
     try:
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
-        db = container.inject(DBService)
-        settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
         data = await state.get_data()
         enhance_prompt = data.get("enhance_prompt", "")
 
-        # Build the image prompt (overridden to strict portrait for lip-sync).
         image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini)
 
         image_path = await imagegen.generate(
             prompt=image_prompt,
             model=settings.get("image_model") or "imagen-4.0-fast-generate-001",
-            video_model=settings.get("video_model") or "seedance",
+            video_model=video_model or "seedance",
             notify=callback.message.answer,
         )
 

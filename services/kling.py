@@ -39,6 +39,7 @@ _MODEL_TEXT_TO_VIDEO  = _V3_PRO_T2V
 # Map from settings model name → Atlas model ID
 MODEL_IDS: dict[str, str] = {
     "kling":            _V3_PRO_I2V,
+    "kling_t2v":        _V3_PRO_T2V,
     "kling_v3_std":     _V3_STD_I2V,
     "kling_o3_pro":     _O3_PRO_I2V,
     "kling_o3_std":     _O3_STD_I2V,
@@ -49,6 +50,7 @@ MODEL_IDS: dict[str, str] = {
 # Human-readable labels used in notify messages
 MODEL_LABELS: dict[str, str] = {
     "kling":            "Kling v3 Pro",
+    "kling_t2v":        "Kling v3 Pro T2V",
     "kling_v3_std":     "Kling v3 Std",
     "kling_o3_pro":     "Kling O3 Pro",
     "kling_o3_std":     "Kling O3 Std",

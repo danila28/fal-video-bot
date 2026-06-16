@@ -64,19 +64,23 @@ class GeminiService:
     def get_video_models(self):
         # Atlas Cloud scene generation models. Pricing — approximate, verify at atlascloud.ai/pricing.
         return [
-            # ── Seedance 2.0 ──────────────────────────────────────────────────
-            {"name": "seedance",          "price": "🎬 Seedance 2.0 · ~$0.08/sec"},
-            {"name": "seedance_fast",     "price": "⚡ Seedance 2.0 Fast · ~$0.05/sec"},
-            {"name": "seedance_ref",      "price": "🎭 Seedance 2.0 Ref · ~$0.08/sec"},
-            {"name": "seedance_fast_ref", "price": "⚡ Seedance 2.0 Fast Ref · ~$0.05/sec"},
-            # ── Kling v3.0 ────────────────────────────────────────────────────
-            {"name": "kling",             "price": "🎬 Kling v3 Pro · ~$0.10/sec"},
-            {"name": "kling_v3_std",      "price": "💰 Kling v3 Std · ~$0.07/sec"},
-            # ── Kling O3 ──────────────────────────────────────────────────────
-            {"name": "kling_o3_pro",      "price": "🏆 Kling O3 Pro · ~$0.14/sec"},
-            {"name": "kling_o3_std",      "price": "⚖️  Kling O3 Std · ~$0.10/sec"},
-            {"name": "kling_o3_pro_ref",  "price": "🎭 Kling O3 Pro Ref · ~$0.14/sec"},
-            {"name": "kling_o3_std_ref",  "price": "🎭 Kling O3 Std Ref · ~$0.10/sec"},
+            # ── Seedance 2.0 I2V (requires reference image) ───────────────────
+            {"name": "seedance",          "price": "🖼 Seedance 2.0 I2V · ~$0.08/sec"},
+            {"name": "seedance_fast",     "price": "🖼⚡ Seedance 2.0 Fast I2V · ~$0.05/sec"},
+            {"name": "seedance_ref",      "price": "🖼🎭 Seedance 2.0 Ref I2V · ~$0.08/sec"},
+            {"name": "seedance_fast_ref", "price": "🖼⚡ Seedance 2.0 Fast Ref · ~$0.05/sec"},
+            # ── Seedance 2.0 T2V (text-to-video, no image needed) ────────────
+            {"name": "seedance_t2v",      "price": "📝 Seedance 2.0 T2V · ~$0.08/sec"},
+            # ── Kling v3.0 I2V (requires reference image) ────────────────────
+            {"name": "kling",             "price": "🖼 Kling v3 Pro I2V · ~$0.10/sec"},
+            {"name": "kling_v3_std",      "price": "🖼💰 Kling v3 Std I2V · ~$0.07/sec"},
+            # ── Kling O3 I2V ──────────────────────────────────────────────────
+            {"name": "kling_o3_pro",      "price": "🖼🏆 Kling O3 Pro I2V · ~$0.14/sec"},
+            {"name": "kling_o3_std",      "price": "🖼⚖️  Kling O3 Std I2V · ~$0.10/sec"},
+            {"name": "kling_o3_pro_ref",  "price": "🖼🎭 Kling O3 Pro Ref · ~$0.14/sec"},
+            {"name": "kling_o3_std_ref",  "price": "🖼🎭 Kling O3 Std Ref · ~$0.10/sec"},
+            # ── Kling T2V (text-to-video, no image needed) ───────────────────
+            {"name": "kling_t2v",         "price": "📝 Kling v3 Pro T2V · ~$0.10/sec"},
             # ── Other ─────────────────────────────────────────────────────────
             {"name": "happy_horse",       "price": "🐴 Happy Horse · ~$0.14/sec"},
             {"name": "pixverse",          "price": "✨ PixVerse · ~$0.05/sec"},
