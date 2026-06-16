@@ -82,6 +82,7 @@ class AtlasClient:
         async with aiohttp.ClientSession() as session:
             # ── Submit ────────────────────────────────────────────────
             payload = {"model": model, **params}
+            logger.info(f"Atlas {endpoint} payload: {payload}")
             async with session.post(
                 f"{_BASE_URL}/model/{endpoint}",
                 headers=self._json_headers,
