@@ -76,6 +76,7 @@ class KlingService:
         self,
         prompt: str,
         image_url: str = "",
+        image_urls: list[str] | None = None,
         duration: int = 10,
         aspect_ratio: str = "9:16",
         negative_prompt: str = "",
@@ -83,18 +84,22 @@ class KlingService:
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
 
-        Reference models use `images` (array) instead of `image` and ignore
-        negative_prompt (not supported by the Reference API).
+        Reference models use `images` (array) and ignore negative_prompt.
+        Pass `image_urls` with multiple URLs to use all images as reference.
+        I2V models use `image` (single string).
         """
         os.makedirs(self.static_dir, exist_ok=True)
         is_reference = model_id in _REFERENCE_MODELS
 
-        if image_url:
+        # image_urls takes priority over image_url
+        effective_urls = image_urls if image_urls else ([image_url] if image_url else [])
+
+        if effective_urls:
             model = model_id
             if is_reference:
                 params: dict = {
                     "prompt": prompt,
-                    "images": [image_url],
+                    "images": effective_urls,
                     "duration": duration,
                     "aspect_ratio": aspect_ratio,
                     "sound": False,
@@ -102,13 +107,12 @@ class KlingService:
             else:
                 params = {
                     "prompt": prompt,
-                    "image": image_url,
+                    "image": effective_urls[0],
                     "duration": duration,
                 }
                 if negative_prompt:
                     params["negative_prompt"] = negative_prompt
         else:
-            # Text-to-video fallback always uses v3.0 Pro
             model = _V3_PRO_T2V
             params = {
                 "prompt": prompt,
@@ -116,7 +120,7 @@ class KlingService:
                 "aspect_ratio": aspect_ratio,
             }
 
-        logger.info(f"Kling generating clip | model={model} | {duration}s")
+        logger.info(f"Kling generating clip | model={model} | {duration}s | images={len(effective_urls)}")
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
 
@@ -127,13 +131,15 @@ class KlingService:
         clip_duration: int = 10,
         negative_prompt: str = "",
         model_id: str = _V3_PRO_I2V,
+        all_reference_urls: list[str] | None = None,
     ) -> list[str]:
         """Generate multiple clips.
 
-        For Image-to-Video models: extracts last frame after each clip and uses
-        it as the anchor for the next clip (visual continuity).
-        For Reference-to-Video models: always uses the original anchor photo
-        because the reference defines character identity, not the starting frame.
+        For I2V models: extracts last frame after each clip and uses it as the
+        anchor for the next clip. `anchor_photo_urls` cycles through multiple
+        images when provided.
+        For Reference models: passes `all_reference_urls` (all uploaded images) to
+        every clip so the model uses all of them for character consistency.
         """
         is_reference = model_id in _REFERENCE_MODELS
         clips: list[str] = []
@@ -141,8 +147,6 @@ class KlingService:
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
             logger.info(f"Kling clip {i + 1}/{len(scene_prompts)} | model={model_id}")
 
-            # For Reference models: add continuation hint to clips 2+ so the model
-            # matches the lighting, background and mood of the previous clip.
             if is_reference and i > 0:
                 effective_prompt = (
                     "Seamlessly continuing from previous scene — "
@@ -152,16 +156,24 @@ class KlingService:
             else:
                 effective_prompt = prompt
 
-            clip_path = await self.generate_clip(
-                prompt=effective_prompt,
-                image_url=photo_url,
-                duration=clip_duration,
-                negative_prompt=negative_prompt,
-                model_id=model_id,
-            )
+            if is_reference and all_reference_urls:
+                clip_path = await self.generate_clip(
+                    prompt=effective_prompt,
+                    image_urls=all_reference_urls,
+                    duration=clip_duration,
+                    model_id=model_id,
+                )
+            else:
+                clip_path = await self.generate_clip(
+                    prompt=effective_prompt,
+                    image_url=photo_url,
+                    duration=clip_duration,
+                    negative_prompt=negative_prompt,
+                    model_id=model_id,
+                )
             clips.append(clip_path)
 
-            # Last-frame continuity only for Image-to-Video models
+            # Last-frame continuity only for I2V models
             if not is_reference and i < len(scene_prompts) - 1:
                 same_photo = anchor_photo_urls[i] == anchor_photo_urls[i + 1]
                 if same_photo:

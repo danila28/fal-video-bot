@@ -136,6 +136,19 @@ class ImageGenService:
 
     # ── Public API ────────────────────────────────────────────────────────
 
+    async def generate_many(
+        self,
+        prompt: str,
+        model: str = _FLUX_MODEL,
+        video_model: str = "seedance",
+        count: int = 1,
+        notify=None,
+    ) -> list[str]:
+        """Generate `count` images in parallel. Returns list of local file paths."""
+        count = max(1, min(4, count))
+        tasks = [self.generate(prompt, model, video_model, notify) for _ in range(count)]
+        return list(await asyncio.gather(*tasks))
+
     async def generate(
         self,
         prompt: str,

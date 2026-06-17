@@ -13,7 +13,7 @@ import time
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 from bot.guard import IsAllowed
 from bot.keyboards import (
     get_image_keyboard,
@@ -46,6 +46,24 @@ from bot.handlers.common import (
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+async def _send_image_preview(message, image_paths: list[str]) -> None:
+    """Send generated images as a media group (album) or single photo."""
+    valid = [p for p in image_paths if os.path.exists(p)]
+    if not valid:
+        return
+    if len(valid) == 1:
+        await message.answer_photo(FSInputFile(valid[0]), caption="image")
+        return
+    media = [
+        InputMediaPhoto(
+            media=FSInputFile(p),
+            caption=f"image {i + 1}/{len(valid)}" if i == 0 else None,
+        )
+        for i, p in enumerate(valid)
+    ]
+    await message.answer_media_group(media=media)
 
 
 # ─────────────────────────────────────────────
@@ -154,7 +172,7 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
 
     if video_model in _T2V_VIDEO_MODELS:
         # ── T2V: no image needed — jump straight to video prompt ──────────────
-        await state.update_data(image_path=None, image_prompt="")
+        await state.update_data(image_paths=[], image_path=None, image_prompt="")
         await state.update_data(generation_in_progress=True, generation_started_at=time.time())
         await callback.message.answer("⏳ Generating video prompt…")
         try:
@@ -188,8 +206,11 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
             await state.update_data(generation_in_progress=False)
         return
 
-    # ── I2V: generate reference image and show for review ────────────────────
-    await callback.message.answer("⏳ Generating image…")
+    # ── I2V: generate reference image(s) and show for review ────────────────
+    image_count = int(settings.get("image_count", 1))
+    await callback.message.answer(
+        f"⏳ Generating {image_count} image{'s' if image_count > 1 else ''}…"
+    )
     try:
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
@@ -198,16 +219,17 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
 
         image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini)
 
-        image_path = await imagegen.generate(
+        image_paths = await imagegen.generate_many(
             prompt=image_prompt,
             model=settings.get("image_model") or "black-forest-labs/flux-2-pro/text-to-image",
             video_model=video_model or "seedance",
+            count=image_count,
             notify=callback.message.answer,
         )
 
-        await state.update_data(image_path=image_path, image_prompt=image_prompt)
-        await callback.message.answer_photo(FSInputFile(image_path), caption="image")
-        await callback.message.answer("Image created.\nContinue?", reply_markup=get_image_keyboard())
+        await state.update_data(image_paths=image_paths, image_prompt=image_prompt)
+        await _send_image_preview(callback.message, image_paths)
+        await callback.message.answer("Image(s) created.\nContinue?", reply_markup=get_image_keyboard())
         await state.set_state(GenerationState.CONFIRM_IMAGE)
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
@@ -267,24 +289,28 @@ async def handle_image_prompt_change(callback: CallbackQuery, state: FSMContext)
 async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("Creating image...")
     try:
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
         db = container.inject(DBService)
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+        image_count = int(settings.get("image_count", 1))
+        await callback.message.answer(
+            f"Creating {image_count} image{'s' if image_count > 1 else ''}…"
+        )
         data = await state.get_data()
         enhance_prompt = data.get("enhance_prompt", "")
         image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini)
-        image_path = await imagegen.generate(
+        image_paths = await imagegen.generate_many(
             prompt=image_prompt,
             model=settings.get("image_model") or "black-forest-labs/flux-2-pro/text-to-image",
             video_model=settings.get("video_model") or "seedance",
+            count=image_count,
             notify=callback.message.answer,
         )
-        await state.update_data(image_path=image_path, image_prompt=image_prompt)
-        await callback.message.answer_photo(FSInputFile(image_path), caption="image")
-        await callback.message.answer("Image created.\nContinue?", reply_markup=get_image_keyboard())
+        await state.update_data(image_paths=image_paths, image_prompt=image_prompt)
+        await _send_image_preview(callback.message, image_paths)
+        await callback.message.answer("Image(s) created.\nContinue?", reply_markup=get_image_keyboard())
     except Exception as e:
         await callback.message.answer(f"Error: {str(e)}\nTry again", reply_markup=get_image_keyboard())
     await state.set_state(GenerationState.CONFIRM_IMAGE)
@@ -468,7 +494,11 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
         db = container.inject(DBService)
         settings = await db.get_settings(user_id, chat_id)
         data = await state.get_data()
-        image_path = data.get("image_path")
+        # Support both new image_paths (list) and legacy image_path (single string)
+        image_paths = data.get("image_paths") or []
+        if not image_paths:
+            single = data.get("image_path")
+            image_paths = [single] if single else []
         if gen_type == "initial":
             video_scene = data.get("video_scene", "")
         else:
@@ -480,7 +510,7 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             settings=settings,
             video_prompt=video_scene,
             voiceover_text=video_voiceover,
-            image_path=image_path,
+            image_paths=image_paths,
             notify=callback.message.answer,
         )
 

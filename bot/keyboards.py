@@ -174,6 +174,7 @@ def get_advanced_settings_keyboard(
     sfx_on: bool = False,
     video_speed: float = 1.0,
     video_resolution: str = "720p",
+    image_count: int = 1,
 ):
     """Advanced settings sub-page — toggles, quality, publishing."""
     subs_label  = "🔤 Subtitles: ON"  if subtitles_default_on else "🔤 Subtitles: OFF"
@@ -181,6 +182,7 @@ def get_advanced_settings_keyboard(
     sfx_label   = "🔊 SFX: ON"       if sfx_on               else "🔊 SFX: OFF"
     spd_label   = f"⚡ {video_speed:.2f}×" if video_speed != 1.0 else "⚡ Speed: normal"
     tz_sign     = "+" if utc_offset >= 0 else ""
+    img_label   = f"🖼 {image_count} photo{'s' if image_count > 1 else ''}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=subs_label, callback_data="settings:subtitles_toggle")],
@@ -195,6 +197,9 @@ def get_advanced_settings_keyboard(
             [
                 InlineKeyboardButton(text=f"📐 {video_resolution}", callback_data="settings:resolution"),
                 InlineKeyboardButton(text=f"⏱ {target_duration}s", callback_data="settings:duration"),
+            ],
+            [
+                InlineKeyboardButton(text=img_label, callback_data="settings:image_count"),
             ],
             [
                 InlineKeyboardButton(text="🚫 Negative prompt", callback_data="settings:negative_prompt"),
@@ -213,3 +218,19 @@ def get_advanced_settings_keyboard(
             ],
         ]
     )
+
+
+def get_image_count_keyboard(current: int = 1):
+    options = [
+        (1, "1 photo — standard"),
+        (2, "2 photos — better variety"),
+        (3, "3 photos — more reference"),
+        (4, "4 photos — maximum reference"),
+    ]
+    rows = []
+    for val, desc in options:
+        mark = "✅ " if val == current else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{desc}", callback_data=f"settings:image_count:{val}"
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

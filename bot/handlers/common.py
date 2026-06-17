@@ -174,7 +174,7 @@ async def generate_video_for_model(
     settings: dict,
     video_prompt: str,
     voiceover_text: str,
-    image_path: str | None,
+    image_paths: list[str] | None,
     notify,
 ) -> dict:
     """Route to the correct generation function based on `settings['video_model']`.
@@ -188,30 +188,30 @@ async def generate_video_for_model(
     """
     model = (settings.get("video_model") or "seedance").lower()
 
-    if model in {"kling", "kling_v3_std", "kling_o3_pro", "kling_o3_std",
+    if model in {"kling", "kling_t2v", "kling_v3_std", "kling_o3_pro", "kling_o3_std",
                  "kling_o3_pro_ref", "kling_o3_std_ref"}:
         return await _generate_kling(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_path=image_path, notify=notify,
+            image_paths=image_paths, notify=notify,
         )
     if model == "happy_horse":
         return await _generate_happyhorse(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_path=image_path, notify=notify,
+            image_paths=image_paths, notify=notify,
         )
     if model == "pixverse":
         return await _generate_pixverse(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_path=image_path, notify=notify,
+            image_paths=image_paths, notify=notify,
         )
     # Seedance variants (default)
     return await _generate_seedance(
         gemini=gemini, settings=settings,
         video_prompt=video_prompt, voiceover_text=voiceover_text,
-        image_path=image_path, notify=notify,
+        image_paths=image_paths, notify=notify,
     )
 
 
@@ -223,7 +223,7 @@ async def _generate_seedance(
     settings: dict,
     video_prompt: str,
     voiceover_text: str,
-    image_path: str | None,
+    image_paths: list[str] | None,
     notify,
 ) -> dict:
     from services.seedance import MODEL_IDS as _SEEDANCE_IDS, MODEL_LABELS as _SEEDANCE_LABELS
@@ -236,23 +236,41 @@ async def _generate_seedance(
     n_clips = max(1, math.ceil(target_duration / clip_dur))
 
     scenes = _split_scene_into_shots(video_prompt, n_clips)
+    valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
     await notify(
-        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s) — "
-        "each clip takes ~3-5 min…"
+        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+        + (f", {len(valid_paths)} ref photo(s)" if valid_paths else "")
+        + ") — each clip takes ~3-5 min…"
     )
 
     seedance = container.inject(SeedanceService)
     is_t2v = model in _T2V_VIDEO_MODELS
+    is_ref = "ref" in model
 
-    if not is_t2v and image_path and os.path.exists(image_path):
-        anchor_url = await seedance.upload_photo(image_path)
-        anchor_urls = [anchor_url] * len(scenes)
-        clips = await seedance.generate_clips(
-            scene_prompts=scenes,
-            anchor_photo_urls=anchor_urls,
-            clip_duration=clip_dur,
-            model_id=atlas_model_id,
-        )
+    if not is_t2v and valid_paths:
+        # Upload all reference images in parallel
+        uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
+
+        if is_ref:
+            # Reference models: every clip gets ALL images for character consistency
+            anchor_urls = [uploaded_urls[0]] * len(scenes)
+            clips = await seedance.generate_clips(
+                scene_prompts=scenes,
+                anchor_photo_urls=anchor_urls,
+                clip_duration=clip_dur,
+                model_id=atlas_model_id,
+                all_reference_urls=uploaded_urls,
+            )
+        else:
+            # I2V models: cycle images across clips for visual variety
+            n = len(uploaded_urls)
+            anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
+            clips = await seedance.generate_clips(
+                scene_prompts=scenes,
+                anchor_photo_urls=anchor_urls,
+                clip_duration=clip_dur,
+                model_id=atlas_model_id,
+            )
     else:
         clips = []
         for i, prompt in enumerate(scenes):
@@ -285,7 +303,7 @@ async def _generate_kling(
     settings: dict,
     video_prompt: str,
     voiceover_text: str,
-    image_path: str | None,
+    image_paths: list[str] | None,
     notify,
 ) -> dict:
     from services.kling import MODEL_IDS as _KLING_IDS, MODEL_LABELS as _KLING_LABELS
@@ -299,24 +317,43 @@ async def _generate_kling(
     negative_prompt = settings.get("negative_prompt") or ""
 
     scenes = _split_scene_into_shots(video_prompt, n_clips)
+    valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
     await notify(
-        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s) — "
-        "each clip takes ~2-4 min…"
+        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+        + (f", {len(valid_paths)} ref photo(s)" if valid_paths else "")
+        + ") — each clip takes ~2-4 min…"
     )
 
     kling = container.inject(KlingService)
     is_t2v = model in _T2V_VIDEO_MODELS
+    is_ref = "ref" in model
 
-    if not is_t2v and image_path and os.path.exists(image_path):
-        anchor_url = await kling.upload_photo(image_path)
-        anchor_urls = [anchor_url] * len(scenes)
-        clips = await kling.generate_clips(
-            scene_prompts=scenes,
-            anchor_photo_urls=anchor_urls,
-            clip_duration=clip_dur,
-            negative_prompt=negative_prompt,
-            model_id=atlas_model_id,
-        )
+    if not is_t2v and valid_paths:
+        # Upload all reference images in parallel
+        uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
+
+        if is_ref:
+            # Reference models: every clip gets ALL images for character consistency
+            anchor_urls = [uploaded_urls[0]] * len(scenes)
+            clips = await kling.generate_clips(
+                scene_prompts=scenes,
+                anchor_photo_urls=anchor_urls,
+                clip_duration=clip_dur,
+                negative_prompt=negative_prompt,
+                model_id=atlas_model_id,
+                all_reference_urls=uploaded_urls,
+            )
+        else:
+            # I2V models: cycle images across clips for visual variety
+            n = len(uploaded_urls)
+            anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
+            clips = await kling.generate_clips(
+                scene_prompts=scenes,
+                anchor_photo_urls=anchor_urls,
+                clip_duration=clip_dur,
+                negative_prompt=negative_prompt,
+                model_id=atlas_model_id,
+            )
     else:
         clips = []
         for i, prompt in enumerate(scenes):
@@ -353,19 +390,21 @@ async def _generate_happyhorse(
     settings: dict,
     video_prompt: str,
     voiceover_text: str,
-    image_path: str | None,
+    image_paths: list[str] | None,
     notify,
 ) -> dict:
     """Happy Horse generates one video (≤15s) with built-in Foley audio.
 
     A reference photo is required — generation is skipped with an error if missing.
     TTS is synthesized separately and layered on top in post-processing.
+    Only the first image is used (single-clip model).
     """
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     clip_duration = max(3, min(15, target_duration))
     resolution = settings.get("video_resolution", "720p")
 
-    if not image_path or not os.path.exists(image_path):
+    valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
+    if not valid_paths:
         raise ValueError(
             "Happy Horse requires a reference photo. "
             "Go back and make sure an image was generated."
@@ -377,7 +416,7 @@ async def _generate_happyhorse(
     )
 
     horse = container.inject(HappyHorseService)
-    anchor_url = await horse.upload_photo(image_path)
+    anchor_url = await horse.upload_photo(valid_paths[0])
 
     # Use the scene description (without voiceover) as the animation prompt.
     scene_only = _strip_voiceover(video_prompt)
@@ -406,13 +445,14 @@ async def _generate_pixverse(
     settings: dict,
     video_prompt: str,
     voiceover_text: str,
-    image_path: str | None,
+    image_paths: list[str] | None,
     notify,
 ) -> dict:
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     n_clips = max(1, math.ceil(target_duration / 5))
 
     scenes = _split_scene_into_shots(video_prompt, n_clips)
+    valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
     await notify(
         f"⏱ Generating <b>PixVerse V4.5</b> ({len(scenes)} clip(s) × 5s) — "
         "each clip takes ~1-3 min…"
@@ -420,9 +460,11 @@ async def _generate_pixverse(
 
     pixverse = container.inject(PixVerseService)
 
-    if image_path and os.path.exists(image_path):
-        anchor_url = await pixverse.upload_photo(image_path)
-        anchor_urls = [anchor_url] * len(scenes)
+    if valid_paths:
+        uploaded_urls = list(await asyncio.gather(*[pixverse.upload_photo(p) for p in valid_paths]))
+        # I2V: cycle images across clips
+        n = len(uploaded_urls)
+        anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
         clips = await pixverse.generate_clips(
             scene_prompts=scenes,
             anchor_photo_urls=anchor_urls,

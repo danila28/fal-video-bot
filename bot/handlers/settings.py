@@ -17,6 +17,7 @@ from bot.keyboards import (
     get_accounts_keyboard,
     get_advanced_settings_keyboard,
     get_duration_keyboard,
+    get_image_count_keyboard,
     get_resolution_keyboard,
     get_settings_keyboard,
     get_speed_keyboard,
@@ -65,6 +66,7 @@ async def settings_advanced(callback: CallbackQuery):
         sfx_on=s.get("sfx_enabled", False),
         video_speed=float(s.get("video_speed", 1.0)),
         video_resolution=s.get("video_resolution", "720p"),
+        image_count=int(s.get("image_count", 1)),
     )
     try:
         await callback.message.edit_text("⚙️ More settings", reply_markup=kb)
@@ -302,6 +304,49 @@ async def settings_duration_selected(callback: CallbackQuery):
             pass
         await callback.message.answer(
             f"✅ Target duration set to <b>{duration}s</b>.", parse_mode="HTML"
+        )
+    except Exception as e:
+        await callback.message.answer(f"❌ Error: {e}")
+
+
+@router.callback_query(lambda c: c.data == "settings:image_count", IsAllowed(allowed_users))
+async def settings_image_count(callback: CallbackQuery):
+    await callback.answer()
+    db = container.inject(DBService)
+    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    current = int(settings.get("image_count", 1))
+    await callback.message.answer(
+        f"🖼 Current: <b>{current} photo{'s' if current > 1 else ''}</b>\n\n"
+        "Choose how many reference images to generate per video.\n\n"
+        "<b>How it works:</b>\n"
+        "• <b>I2V models</b> (Kling, Seedance, PixVerse): images are cycled across clips "
+        "— clip 1 uses photo 1, clip 2 uses photo 2, etc.\n"
+        "• <b>Reference models</b> (Kling Ref, Seedance Ref): <i>all</i> images are passed "
+        "to every clip so the model uses all of them for character consistency.\n\n"
+        "More photos → more visual variety and better character anchoring.",
+        parse_mode="HTML",
+        reply_markup=get_image_count_keyboard(current),
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("settings:image_count:"), IsAllowed(allowed_users))
+async def settings_image_count_selected(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        count = int(callback.data.split(":")[-1])
+        if count not in (1, 2, 3, 4):
+            await callback.message.answer("❌ Invalid value.")
+            return
+        db = container.inject(DBService)
+        await db.update_settings(
+            callback.from_user.id, callback.message.chat.id, {"image_count": count}
+        )
+        try:
+            await callback.message.edit_reply_markup(reply_markup=get_image_count_keyboard(count))
+        except Exception:
+            pass
+        await callback.message.answer(
+            f"✅ Image count set to <b>{count} photo{'s' if count > 1 else ''}</b>.", parse_mode="HTML"
         )
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")

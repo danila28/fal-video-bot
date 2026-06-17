@@ -70,6 +70,7 @@ class SeedanceService:
         self,
         prompt: str,
         image_url: str = "",
+        image_urls: list[str] | None = None,
         duration: int = 10,
         aspect_ratio: str = "9:16",
         resolution: str = "720p",
@@ -77,19 +78,29 @@ class SeedanceService:
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
 
-        Reference models use `image_urls` (array) + `@Image1` in prompt.
-        Image-to-Video models use `image_url` (single string) + `ratio` param.
+        Reference models use `image_urls` (array) + `@Image1..N` tags in prompt.
+        Pass `image_urls` with multiple URLs to use all images as reference.
+        Image-to-Video models use `image_url` (single string).
         """
         os.makedirs(self.static_dir, exist_ok=True)
         is_reference = model_id in _REFERENCE_MODELS
 
-        if image_url:
+        # Resolve effective URL list: image_urls takes priority over image_url
+        effective_urls = image_urls if image_urls else ([image_url] if image_url else [])
+
+        if effective_urls:
             model = model_id
             if is_reference:
-                ref_prompt = f"@Image1 {prompt}" if not prompt.startswith("@Image1") else prompt
+                # Build @Image1 @Image2 ... tags for each provided reference image
+                tags = " ".join(f"@Image{i + 1}" for i in range(len(effective_urls)))
+                ref_prompt = (
+                    f"{tags} {prompt}"
+                    if not any(f"@Image{i + 1}" in prompt for i in range(len(effective_urls)))
+                    else prompt
+                )
                 params = {
                     "prompt": ref_prompt,
-                    "image_urls": [image_url],
+                    "image_urls": effective_urls,
                     "duration": duration,
                     "aspect_ratio": aspect_ratio,
                     "resolution": resolution,
@@ -99,7 +110,7 @@ class SeedanceService:
             else:
                 params = {
                     "prompt": prompt,
-                    "image_url": image_url,
+                    "image_url": effective_urls[0],
                     "duration": duration,
                     "ratio": aspect_ratio,
                     "resolution": resolution,
@@ -117,7 +128,7 @@ class SeedanceService:
                 "watermark": False,
             }
 
-        logger.info(f"Seedance generating clip | model={model} | {duration}s")
+        logger.info(f"Seedance generating clip | model={model} | {duration}s | images={len(effective_urls)}")
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
 
@@ -127,13 +138,17 @@ class SeedanceService:
         anchor_photo_urls: list[str],
         clip_duration: int = 10,
         model_id: str = _I2V,
+        all_reference_urls: list[str] | None = None,
     ) -> list[str]:
         """Generate multiple clips.
 
-        For Image-to-Video models: extracts last frame after each clip and uses
-        it as the anchor for the next clip (visual continuity).
-        For Reference-to-Video models: always uses the original anchor photo
-        because the reference defines character identity, not the starting frame.
+        For I2V models: extracts last frame after each clip and uses it as the
+        anchor for the next clip (visual continuity). `anchor_photo_urls` cycles
+        through multiple images when provided.
+        For Reference models: passes `all_reference_urls` (all uploaded images) to
+        every clip so the model uses all of them for character consistency.
+        `anchor_photo_urls` is ignored for reference models when `all_reference_urls`
+        is set.
         """
         is_reference = model_id in _REFERENCE_MODELS
         clips: list[str] = []
@@ -141,8 +156,6 @@ class SeedanceService:
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
             logger.info(f"Generating Seedance clip {i + 1}/{len(scene_prompts)}")
 
-            # For Reference models: add continuation hint to clips 2+ so the model
-            # matches the lighting, background and mood of the previous clip.
             if is_reference and i > 0:
                 effective_prompt = (
                     "Seamlessly continuing from previous scene — "
@@ -152,15 +165,23 @@ class SeedanceService:
             else:
                 effective_prompt = prompt
 
-            clip_path = await self.generate_clip(
-                prompt=effective_prompt,
-                image_url=photo_url,
-                duration=clip_duration,
-                model_id=model_id,
-            )
+            if is_reference and all_reference_urls:
+                clip_path = await self.generate_clip(
+                    prompt=effective_prompt,
+                    image_urls=all_reference_urls,
+                    duration=clip_duration,
+                    model_id=model_id,
+                )
+            else:
+                clip_path = await self.generate_clip(
+                    prompt=effective_prompt,
+                    image_url=photo_url,
+                    duration=clip_duration,
+                    model_id=model_id,
+                )
             clips.append(clip_path)
 
-            # Last-frame continuity only for Image-to-Video models
+            # Last-frame continuity only for I2V models
             if not is_reference and i < len(scene_prompts) - 1:
                 same_photo = anchor_photo_urls[i] == anchor_photo_urls[i + 1]
                 if same_photo:
