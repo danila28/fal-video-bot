@@ -1,17 +1,27 @@
-"""Photo generation for video pipelines — Atlas Cloud only.
+"""Photo generation for video pipelines.
 
 Backends chosen via `model` parameter:
-  • black-forest-labs/flux-2-pro/text-to-image       — FLUX 2 Pro (default, universal)
+
+  Vertex AI (Gemini image models):
+  • gemini-3.1-flash-image  — Nano Banana 2  (fast, affordable)
+  • gemini-3-pro-image       — Nano Banana Pro (highest quality)
+
+  Atlas Cloud:
+  • black-forest-labs/flux-2-pro/text-to-image       — FLUX 2 Pro (universal)
   • black-forest-labs/flux-kontext-pro-text-to-image — FLUX Kontext (character consistency)
   • ideogram/ideogram-v3/text-to-image               — Ideogram V3 (stylised art)
 
-All models produce 9:16 vertical output via Atlas Cloud.
-On failure, automatically falls back to FLUX 2 Pro.
+All models produce 9:16 vertical output.
+On failure, automatically falls back to FLUX 2 Pro (Atlas).
 """
 
+import asyncio
 import logging
 import os
 import uuid
+
+from google import genai
+from google.genai import types
 
 from services.atlas import AtlasClient
 
@@ -21,11 +31,14 @@ _FLUX_MODEL         = "black-forest-labs/flux-2-pro/text-to-image"
 _FLUX_KONTEXT_MODEL = "black-forest-labs/flux-kontext-pro-text-to-image"
 _IDEOGRAM_MODEL     = "ideogram/ideogram-v3/text-to-image"
 
+_VERTEX_IMAGE_MODELS = {"gemini-3.1-flash-image", "gemini-3-pro-image"}
+
 
 class ImageGenService:
     def __init__(self, api_key: str = "", atlas_api_key: str = "", static_dir: str = ""):
-        # api_key kept for backwards-compatible instantiation; not used.
         self._atlas = AtlasClient(atlas_api_key, static_dir) if atlas_api_key else None
+        # Vertex client — same API key, vertexai=True routes to Google Cloud
+        self._vertex = genai.Client(api_key=api_key, vertexai=True) if api_key else None
         if not static_dir:
             static_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
@@ -41,6 +54,45 @@ class ImageGenService:
         if self._atlas is None:
             raise RuntimeError("ATLAS_API_KEY is required for image generation")
         return self._atlas
+
+    def _require_vertex(self) -> genai.Client:
+        if self._vertex is None:
+            raise RuntimeError("GEMINI_API_KEY is required for Vertex image generation")
+        return self._vertex
+
+    # ── Vertex backends ───────────────────────────────────────────────────
+
+    async def _generate_via_vertex(self, prompt: str, model: str) -> str:
+        client = self._require_vertex()
+        os.makedirs(self.static_dir, exist_ok=True)
+
+        contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
+        config = types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            image_config=types.ImageConfig(aspect_ratio="9:16", output_mime_type="image/png"),
+        )
+
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=model,
+            contents=contents,
+            config=config,
+        )
+
+        if getattr(response, "prompt_feedback", None) is not None:
+            raise RuntimeError(f"Vertex image blocked: {response.prompt_feedback}")
+
+        for cand in getattr(response, "candidates", []) or []:
+            for part in getattr(getattr(cand, "content", None), "parts", []) or []:
+                inline = getattr(part, "inline_data", None)
+                if inline and getattr(inline, "data", None):
+                    path = os.path.join(self.static_dir, f"{uuid.uuid4()}.png")
+                    with open(path, "wb") as f:
+                        f.write(inline.data)
+                    logger.info(f"Vertex image saved: {path}")
+                    return path
+
+        raise RuntimeError(f"Vertex model {model} returned no image data")
 
     # ── Atlas backends ────────────────────────────────────────────────────
 
@@ -96,6 +148,8 @@ class ImageGenService:
         logger.info(f"Image generation | model={model} | aspect={aspect_ratio} | prompt={prompt[:80]}…")
 
         try:
+            if model in _VERTEX_IMAGE_MODELS:
+                return await self._generate_via_vertex(prompt, model)
             if model == _FLUX_KONTEXT_MODEL:
                 return await self._generate_via_kontext(prompt, aspect_ratio)
             if model == _IDEOGRAM_MODEL:

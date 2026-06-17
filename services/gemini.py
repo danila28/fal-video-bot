@@ -47,16 +47,20 @@ class GeminiService:
 
     def get_text_models(self):
         return [
-            {"name": "gemini-2.5-flash-lite",  "price": "💰 ~$0.10/1M tok"},
-            {"name": "gemini-2.5-flash",       "price": "⚖️  ~$0.15/1M tok"},
-            {"name": "gemini-2.5-pro",         "price": "🏆 ~$1.25/1M tok"},
+            {"name": "gemini-3.1-flash-lite",  "price": "💰 ~$0.10/1M tok"},
+            {"name": "gemini-3.5-flash",        "price": "⚖️  ~$0.15/1M tok"},
+            {"name": "gemini-3.1-pro",          "price": "🏆 ~$1.25/1M tok"},
         ]
 
     def get_image_models(self):
         return [
-            {"name": "black-forest-labs/flux-2-pro/text-to-image",       "price": "💰 ~$0.05/img · универсальный"},
-            {"name": "black-forest-labs/flux-kontext-pro-text-to-image",  "price": "⚖️  ~$0.05/img · консистентность персонажа"},
-            {"name": "ideogram/ideogram-v3/text-to-image",               "price": "🎨 ~$0.08/img · стиль и арт"},
+            # ── Vertex (Gemini image) ─────────────────────────────────────────
+            {"name": "gemini-3.1-flash-image",  "price": "⚡ Nano Banana 2 · Vertex · ~$0.04/img"},
+            {"name": "gemini-3-pro-image",       "price": "🏆 Nano Banana Pro · Vertex · ~$0.08/img"},
+            # ── Atlas Cloud ───────────────────────────────────────────────────
+            {"name": "black-forest-labs/flux-2-pro/text-to-image",       "price": "💰 FLUX 2 Pro · ~$0.05/img · универсальный"},
+            {"name": "black-forest-labs/flux-kontext-pro-text-to-image",  "price": "⚖️  FLUX Kontext · ~$0.05/img · консистентность"},
+            {"name": "ideogram/ideogram-v3/text-to-image",               "price": "🎨 Ideogram V3 · ~$0.08/img · стиль и арт"},
         ]
 
     def get_video_models(self):
@@ -88,7 +92,7 @@ class GeminiService:
 
     @_retry_cheap
     async def generate_text(
-        self, prompt: str, system_prompt: str = "", model: str = "gemini-2.5-flash-lite"
+        self, prompt: str, system_prompt: str = "", model: str = "gemini-3.1-flash-lite"
     ) -> str:
         try:
             contents = [
