@@ -398,23 +398,52 @@ async def _generate_kling(
             "has_native_audio": True,
         }
 
-    # ── Regular Kling I2V / T2V / Reference path ─────────────────────────────
+    from services.kling import MULTIFRAME_SETTINGS_KEYS as _KLING_MF_KEYS
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     clip_dur = _clip_duration_for_model(model)
     n_clips = max(1, math.ceil(target_duration / clip_dur))
     negative_prompt = settings.get("negative_prompt") or ""
-
     scenes = _split_scene_into_shots(video_prompt, n_clips)
-    await notify(
-        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
-        + (f", {len(valid_paths)} ref photo(s)" if valid_paths else "")
-        + ") — each clip takes ~2-4 min…"
-    )
-
     is_t2v = model in _T2V_VIDEO_MODELS
     is_ref = "ref" in model
 
-    if not is_t2v and valid_paths:
+    # ── Multi-frame path (kling, kling_v3_std, kling_t2v) ────────────────────
+    if model in _KLING_MF_KEYS:
+        _SHOTS_PER_BATCH = 3  # 3 × 5s = 15s per guidances call
+        batches = [scenes[i:i + _SHOTS_PER_BATCH] for i in range(0, len(scenes), _SHOTS_PER_BATCH)]
+        n_batches = len(batches)
+
+        # Upload reference image once (only for I2V models)
+        ref_url = ""
+        if not is_t2v and valid_paths:
+            ref_url = await kling.upload_photo(valid_paths[0])
+
+        await notify(
+            f"⏱ Generating <b>{label}</b> multi-frame"
+            f" ({len(scenes)} shots → {n_batches} batch(es) × 15s"
+            + (f", ref photo" if ref_url else "")
+            + ") — ~2-4 min per batch…"
+        )
+
+        clips = []
+        for i, batch in enumerate(batches):
+            await notify(f"🎞 {label} batch {i + 1}/{n_batches} ({len(batch)} shots)…")
+            clip = await kling.generate_multiframe_clip(
+                scene_prompts=batch,
+                shot_duration=clip_dur,
+                image_reference_url=ref_url,
+                face_consistency=bool(ref_url),
+                negative_prompt=negative_prompt,
+            )
+            clips.append(clip)
+
+    # ── Regular Kling I2V / T2V / Reference path (O3, Ref, etc.) ────────────
+    elif not is_t2v and valid_paths:
+        await notify(
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+            + (f", {len(valid_paths)} ref photo(s)" if valid_paths else "")
+            + ") — each clip takes ~2-4 min…"
+        )
         uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
 
         if is_ref:
@@ -438,6 +467,10 @@ async def _generate_kling(
                 model_id=atlas_model_id,
             )
     else:
+        await notify(
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+            + ") — each clip takes ~2-4 min…"
+        )
         clips = []
         for i, prompt in enumerate(scenes):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
@@ -659,15 +692,22 @@ def _strip_voiceover(video_prompt: str) -> str:
 # ── Prompt builders ─────────────────────────────────────────────────────────
 
 def _clip_duration_for_model(video_model: str) -> int:
-    """Return the fixed clip length (seconds) for the given video model."""
+    """Return the per-scene duration (seconds) for the given video model.
+
+    For multi-frame Kling models this is the per-shot duration (5s); the actual
+    API call batches up to 3 shots into a single 15s guidances request.
+    Regular Kling I2V/T2V supports only 5 or 10 seconds per clip.
+    """
     if video_model == "pixverse":
         return 5
     if video_model == "happy_horse":
         return 15
     if video_model.startswith("seedance"):
         return 10
-    # kling (all variants) support 15s clips
-    return 15
+    from services.kling import MULTIFRAME_SETTINGS_KEYS as _MF
+    if video_model in _MF:
+        return 5   # per-shot duration; 3 shots = 15s per guidances call
+    return 10      # O3/Omni/Ref — standard I2V, max 10s
 
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:

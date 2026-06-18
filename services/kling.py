@@ -32,6 +32,8 @@ _O3_STD_I2V   = "kwaivgi/kling-video-o3-std/image-to-video"
 _O3_PRO_REF   = "kwaivgi/kling-video-o3-pro/reference-to-video"
 _O3_STD_REF   = "kwaivgi/kling-video-o3-std/reference-to-video"
 _V3_OMNI_I2V  = "kwaivgi/kling-v3.0-omni/image-to-video"
+# Multi-frame guidances endpoint (up to 6 shots × 5s = 15s per call)
+_V3_MULTI     = "kling-v3"
 
 # Backwards-compat aliases used by existing code
 _MODEL_IMAGE_TO_VIDEO = _V3_PRO_I2V
@@ -63,6 +65,9 @@ MODEL_LABELS: dict[str, str] = {
 
 _REFERENCE_MODELS = {_O3_PRO_REF, _O3_STD_REF}
 _OMNI_MODELS      = {_V3_OMNI_I2V}
+
+# Settings keys whose generation uses the guidances/multi-frame API
+MULTIFRAME_SETTINGS_KEYS: frozenset[str] = frozenset({"kling", "kling_v3_std", "kling_t2v"})
 
 
 class KlingService:
@@ -210,6 +215,44 @@ class KlingService:
                             pass
 
         return clips
+
+    async def generate_multiframe_clip(
+        self,
+        scene_prompts: list[str],
+        shot_duration: int = 5,
+        image_reference_url: str = "",
+        motion_has_audio: bool = False,
+        face_consistency: bool = True,
+        negative_prompt: str = "",
+    ) -> str:
+        """Generate one clip via the guidances (multi-frame) API.
+
+        scene_prompts: up to 6 shot descriptions (max 6 × 5s = 15s per call).
+        image_reference_url: single character anchor image for I2V; omit for T2V.
+        motion_has_audio: let Kling generate its own background audio.
+        face_consistency: stabilise facial features across shots.
+        """
+        os.makedirs(self.static_dir, exist_ok=True)
+        params: dict = {
+            "guidances": [
+                {"index": i, "prompt": p, "duration": shot_duration}
+                for i, p in enumerate(scene_prompts)
+            ],
+            "motion_has_audio": motion_has_audio,
+            "face_consistency": face_consistency,
+        }
+        if image_reference_url:
+            params["image_reference"] = image_reference_url
+        if negative_prompt:
+            params["negative_prompt"] = negative_prompt
+
+        logger.info(
+            f"Kling multi-frame | shots={len(scene_prompts)} × {shot_duration}s"
+            f" | total={len(scene_prompts) * shot_duration}s"
+            f" | ref={'yes' if image_reference_url else 'no'}"
+        )
+        video_url = await self._atlas.generate_video(_V3_MULTI, params)
+        return await self._atlas.download(video_url, ext="mp4")
 
     async def _extract_last_frame(self, video_path: str) -> str:
         try:
