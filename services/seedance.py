@@ -209,18 +209,16 @@ class SeedanceService:
                 )
             clips.append(clip_path)
 
-            # Last-frame continuity only for I2V models
+            # Last-frame continuity for all I2V models (regardless of photo count)
             if not is_reference and i < len(scene_prompts) - 1:
-                same_photo = anchor_photo_urls[i] == anchor_photo_urls[i + 1]
-                if same_photo:
-                    frame_path = await self._extract_last_frame(clip_path)
-                    if frame_path:
-                        frame_url = await self.upload_photo(frame_path)
-                        anchor_photo_urls[i + 1] = frame_url
-                        try:
-                            os.remove(frame_path)
-                        except OSError:
-                            pass
+                frame_path = await self._extract_last_frame(clip_path)
+                if frame_path:
+                    frame_url = await self.upload_photo(frame_path)
+                    anchor_photo_urls[i + 1] = frame_url
+                    try:
+                        os.remove(frame_path)
+                    except OSError:
+                        pass
 
         return clips
 

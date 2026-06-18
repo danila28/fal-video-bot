@@ -426,16 +426,28 @@ async def _generate_kling(
         )
 
         clips = []
+        current_ref_url = ref_url  # updated after each batch for visual continuity
+
         for i, batch in enumerate(batches):
             await notify(f"🎞 {label} batch {i + 1}/{n_batches} ({len(batch)} shots)…")
             clip = await kling.generate_multiframe_clip(
                 scene_prompts=batch,
                 shot_duration=clip_dur,
-                image_reference_url=ref_url,
-                face_consistency=bool(ref_url),
+                image_reference_url=current_ref_url,
+                face_consistency=bool(current_ref_url),
                 negative_prompt=negative_prompt,
             )
             clips.append(clip)
+
+            # Use last frame of this batch as the start anchor for the next
+            if i < n_batches - 1:
+                frame_path = await gemini.extract_last_frame(clip)
+                if frame_path:
+                    current_ref_url = await kling.upload_photo(frame_path)
+                    try:
+                        os.remove(frame_path)
+                    except OSError:
+                        pass
 
     # ── Regular Kling I2V / T2V / Reference path (O3, Ref, etc.) ────────────
     elif not is_t2v and valid_paths:
@@ -715,7 +727,9 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
     clip_duration = _clip_duration_for_model(video_model)
-    is_single_clip = video_model == "happy_horse"
+    # Single-clip models: generate one continuous scene, not multiple shots
+    _SINGLE_CLIP_MODELS = {"happy_horse", "kling_omni", "seedance_audio_ref"}
+    is_single_clip = video_model in _SINGLE_CLIP_MODELS
 
     n_clips = 1 if is_single_clip else max(1, math.ceil(target_duration / clip_duration))
     actual_duration = n_clips * clip_duration
