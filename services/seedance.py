@@ -36,23 +36,27 @@ _MODEL_TEXT_TO_VIDEO  = _T2V
 
 # Map from settings model name → Atlas model ID
 MODEL_IDS: dict[str, str] = {
-    "seedance":          _I2V,
-    "seedance_t2v":      _T2V,
-    "seedance_fast":     _FAST_I2V,
-    "seedance_ref":      _REF,
-    "seedance_fast_ref": _FAST_REF,
+    "seedance":           _I2V,
+    "seedance_t2v":       _T2V,
+    "seedance_fast":      _FAST_I2V,
+    "seedance_ref":       _REF,
+    "seedance_fast_ref":  _FAST_REF,
+    # audio_ref uses the same base I2V model with an extra audio_ref parameter
+    "seedance_audio_ref": _I2V,
 }
 
 # Human-readable labels used in notify messages
 MODEL_LABELS: dict[str, str] = {
-    "seedance":          "Seedance 2.0",
-    "seedance_t2v":      "Seedance 2.0 T2V",
-    "seedance_fast":     "Seedance 2.0 Fast",
-    "seedance_ref":      "Seedance 2.0 Reference",
-    "seedance_fast_ref": "Seedance 2.0 Fast Reference",
+    "seedance":           "Seedance 2.0",
+    "seedance_t2v":       "Seedance 2.0 T2V",
+    "seedance_fast":      "Seedance 2.0 Fast",
+    "seedance_ref":       "Seedance 2.0 Reference",
+    "seedance_fast_ref":  "Seedance 2.0 Fast Reference",
+    "seedance_audio_ref": "Seedance 2.0 Audio Ref",
 }
 
-_REFERENCE_MODELS = {_REF, _FAST_REF}
+_REFERENCE_MODELS  = {_REF, _FAST_REF}
+_AUDIO_REF_MODELS  = {"seedance_audio_ref"}  # settings key set, not Atlas IDs
 
 
 class SeedanceService:
@@ -61,9 +65,13 @@ class SeedanceService:
         self.static_dir = self._atlas.static_dir
 
     async def upload_photo(self, photo_path: str) -> str:
-        """Upload a local photo to Atlas Cloud storage. Returns public URL."""
         url = await self._atlas.upload_file(photo_path)
-        logger.info(f"Seedance: uploaded {photo_path} → {url}")
+        logger.info(f"Seedance: uploaded photo {photo_path} → {url}")
+        return url
+
+    async def upload_audio(self, audio_path: str) -> str:
+        url = await self._atlas.upload_file(audio_path)
+        logger.info(f"Seedance: uploaded audio {audio_path} → {url}")
         return url
 
     async def generate_clip(
@@ -71,6 +79,7 @@ class SeedanceService:
         prompt: str,
         image_url: str = "",
         image_urls: list[str] | None = None,
+        audio_ref_url: str = "",
         duration: int = 10,
         aspect_ratio: str = "9:16",
         resolution: str = "720p",
@@ -78,20 +87,19 @@ class SeedanceService:
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
 
-        Reference models use `image_urls` (array) + `@Image1..N` tags in prompt.
-        Pass `image_urls` with multiple URLs to use all images as reference.
-        Image-to-Video models use `image_url` (single string).
+        Audio-ref mode: pass `audio_ref_url` — model syncs motion/lips to audio.
+        Reference models: use `image_urls` array + `@Image1..N` tags in prompt.
+        I2V models: use `image_url` (single string).
         """
         os.makedirs(self.static_dir, exist_ok=True)
         is_reference = model_id in _REFERENCE_MODELS
 
-        # Resolve effective URL list: image_urls takes priority over image_url
+        # image_urls takes priority over image_url
         effective_urls = image_urls if image_urls else ([image_url] if image_url else [])
 
         if effective_urls:
             model = model_id
             if is_reference:
-                # Build @Image1 @Image2 ... tags for each provided reference image
                 tags = " ".join(f"@Image{i + 1}" for i in range(len(effective_urls)))
                 ref_prompt = (
                     f"{tags} {prompt}"
@@ -103,6 +111,23 @@ class SeedanceService:
                     "image_urls": effective_urls,
                     "duration": duration,
                     "aspect_ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "generate_audio": False,
+                    "watermark": False,
+                }
+            elif audio_ref_url:
+                # Audio-ref I2V: `[Audio1]` tag in prompt, audio drives lip/motion sync
+                audio_prompt = (
+                    f"[Audio1] {prompt}"
+                    if not prompt.startswith("[Audio1]")
+                    else prompt
+                )
+                params = {
+                    "prompt": audio_prompt,
+                    "image_url": effective_urls[0],
+                    "audio_ref": audio_ref_url,
+                    "duration": duration,
+                    "ratio": aspect_ratio,
                     "resolution": resolution,
                     "generate_audio": False,
                     "watermark": False,
@@ -128,7 +153,10 @@ class SeedanceService:
                 "watermark": False,
             }
 
-        logger.info(f"Seedance generating clip | model={model} | {duration}s | images={len(effective_urls)}")
+        logger.info(
+            f"Seedance generating clip | model={model} | {duration}s"
+            f" | images={len(effective_urls)} | audio_ref={'yes' if audio_ref_url else 'no'}"
+        )
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
 

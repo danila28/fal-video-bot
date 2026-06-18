@@ -65,27 +65,28 @@ class GeminiService:
 
     def get_video_models(self):
         # Atlas Cloud scene generation models. Pricing — approximate, verify at atlascloud.ai/pricing.
+        # Entries with separator=True render as non-clickable section headers in the keyboard.
         return [
-            # ── Seedance 2.0 I2V (requires reference image) ───────────────────
-            {"name": "seedance",          "price": "🖼 Seedance 2.0 I2V · ~$0.08/sec"},
-            {"name": "seedance_fast",     "price": "🖼⚡ Seedance 2.0 Fast I2V · ~$0.05/sec"},
-            {"name": "seedance_ref",      "price": "🖼🎭 Seedance 2.0 Ref I2V · ~$0.08/sec"},
-            {"name": "seedance_fast_ref", "price": "🖼⚡ Seedance 2.0 Fast Ref · ~$0.05/sec"},
-            # ── Seedance 2.0 T2V (text-to-video, no image needed) ────────────
-            {"name": "seedance_t2v",      "price": "📝 Seedance 2.0 T2V · ~$0.08/sec"},
-            # ── Kling v3.0 I2V (requires reference image) ────────────────────
-            {"name": "kling",             "price": "🖼 Kling v3 Pro I2V · ~$0.10/sec"},
-            {"name": "kling_v3_std",      "price": "🖼💰 Kling v3 Std I2V · ~$0.07/sec"},
-            # ── Kling O3 I2V ──────────────────────────────────────────────────
-            {"name": "kling_o3_pro",      "price": "🖼🏆 Kling O3 Pro I2V · ~$0.14/sec"},
-            {"name": "kling_o3_std",      "price": "🖼⚖️  Kling O3 Std I2V · ~$0.10/sec"},
-            {"name": "kling_o3_pro_ref",  "price": "🖼🎭 Kling O3 Pro Ref · ~$0.14/sec"},
-            {"name": "kling_o3_std_ref",  "price": "🖼🎭 Kling O3 Std Ref · ~$0.10/sec"},
-            # ── Kling T2V (text-to-video, no image needed) ───────────────────
-            {"name": "kling_t2v",         "price": "📝 Kling v3 Pro T2V · ~$0.10/sec"},
-            # ── Other ─────────────────────────────────────────────────────────
-            {"name": "happy_horse",       "price": "🐴 Happy Horse · ~$0.14/sec"},
-            {"name": "pixverse",          "price": "✨ PixVerse · ~$0.05/sec"},
+            {"separator": True, "label": "── Seedance ──"},
+            {"name": "seedance",           "price": "🖼 I2V · ~$0.08/sec"},
+            {"name": "seedance_fast",      "price": "🖼⚡ Fast I2V · ~$0.05/sec"},
+            {"name": "seedance_ref",       "price": "🖼🎭 Ref I2V · ~$0.08/sec"},
+            {"name": "seedance_fast_ref",  "price": "🖼⚡ Fast Ref · ~$0.05/sec"},
+            {"name": "seedance_t2v",       "price": "📝 T2V · ~$0.08/sec"},
+            {"separator": True, "label": "── Kling ──"},
+            {"name": "kling",              "price": "🖼 v3 Pro I2V · ~$0.10/sec"},
+            {"name": "kling_v3_std",       "price": "🖼 v3 Std I2V · ~$0.07/sec"},
+            {"name": "kling_o3_pro",       "price": "🖼🏆 O3 Pro I2V · ~$0.14/sec"},
+            {"name": "kling_o3_std",       "price": "🖼⚖️ O3 Std I2V · ~$0.10/sec"},
+            {"name": "kling_o3_pro_ref",   "price": "🖼🎭 O3 Pro Ref · ~$0.14/sec"},
+            {"name": "kling_o3_std_ref",   "price": "🖼🎭 O3 Std Ref · ~$0.10/sec"},
+            {"name": "kling_t2v",          "price": "📝 v3 Pro T2V · ~$0.10/sec"},
+            {"separator": True, "label": "── 🎙 Lip-Sync (нужен голос + фото) ──"},
+            {"name": "kling_omni",         "price": "🎙 Kling v3 Omni · ~$0.12/sec"},
+            {"name": "seedance_audio_ref", "price": "🎙 Seedance Audio Ref · ~$0.08/sec"},
+            {"separator": True, "label": "── Другие ──"},
+            {"name": "happy_horse",        "price": "🐴 Happy Horse · ~$0.14/sec"},
+            {"name": "pixverse",           "price": "✨ PixVerse · ~$0.05/sec"},
         ]
 
     # ── Text generation ────────────────────────────────────────────────────

@@ -31,6 +31,7 @@ _O3_PRO_I2V   = "kwaivgi/kling-video-o3-pro/image-to-video"
 _O3_STD_I2V   = "kwaivgi/kling-video-o3-std/image-to-video"
 _O3_PRO_REF   = "kwaivgi/kling-video-o3-pro/reference-to-video"
 _O3_STD_REF   = "kwaivgi/kling-video-o3-std/reference-to-video"
+_V3_OMNI_I2V  = "kwaivgi/kling-v3.0-omni/image-to-video"
 
 # Backwards-compat aliases used by existing code
 _MODEL_IMAGE_TO_VIDEO = _V3_PRO_I2V
@@ -45,6 +46,7 @@ MODEL_IDS: dict[str, str] = {
     "kling_o3_std":     _O3_STD_I2V,
     "kling_o3_pro_ref": _O3_PRO_REF,
     "kling_o3_std_ref": _O3_STD_REF,
+    "kling_omni":       _V3_OMNI_I2V,
 }
 
 # Human-readable labels used in notify messages
@@ -56,9 +58,11 @@ MODEL_LABELS: dict[str, str] = {
     "kling_o3_std":     "Kling O3 Std",
     "kling_o3_pro_ref": "Kling O3 Pro Reference",
     "kling_o3_std_ref": "Kling O3 Std Reference",
+    "kling_omni":       "Kling v3 Omni",
 }
 
 _REFERENCE_MODELS = {_O3_PRO_REF, _O3_STD_REF}
+_OMNI_MODELS      = {_V3_OMNI_I2V}
 
 
 class KlingService:
@@ -67,9 +71,13 @@ class KlingService:
         self.static_dir = self._atlas.static_dir
 
     async def upload_photo(self, photo_path: str) -> str:
-        """Upload a local photo to Atlas Cloud storage. Returns public URL."""
         url = await self._atlas.upload_file(photo_path)
-        logger.info(f"Kling: uploaded {photo_path} → {url}")
+        logger.info(f"Kling: uploaded photo {photo_path} → {url}")
+        return url
+
+    async def upload_audio(self, audio_path: str) -> str:
+        url = await self._atlas.upload_file(audio_path)
+        logger.info(f"Kling: uploaded audio {audio_path} → {url}")
         return url
 
     async def generate_clip(
@@ -77,6 +85,7 @@ class KlingService:
         prompt: str,
         image_url: str = "",
         image_urls: list[str] | None = None,
+        voice_element_audio_url: str = "",
         duration: int = 10,
         aspect_ratio: str = "9:16",
         negative_prompt: str = "",
@@ -84,20 +93,31 @@ class KlingService:
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
 
+        Omni models use `image_urls` + `voice_element_audio` for native lip-sync.
         Reference models use `images` (array) and ignore negative_prompt.
-        Pass `image_urls` with multiple URLs to use all images as reference.
         I2V models use `image` (single string).
         """
         os.makedirs(self.static_dir, exist_ok=True)
         is_reference = model_id in _REFERENCE_MODELS
+        is_omni      = model_id in _OMNI_MODELS
 
         # image_urls takes priority over image_url
         effective_urls = image_urls if image_urls else ([image_url] if image_url else [])
 
         if effective_urls:
             model = model_id
-            if is_reference:
+            if is_omni:
                 params: dict = {
+                    "prompt": prompt,
+                    "image_urls": effective_urls,
+                    "duration": duration,
+                    "aspect_ratio": aspect_ratio,
+                    "mode": "pro",
+                }
+                if voice_element_audio_url:
+                    params["voice_element_audio"] = voice_element_audio_url
+            elif is_reference:
+                params = {
                     "prompt": prompt,
                     "images": effective_urls,
                     "duration": duration,
@@ -120,7 +140,10 @@ class KlingService:
                 "aspect_ratio": aspect_ratio,
             }
 
-        logger.info(f"Kling generating clip | model={model} | {duration}s | images={len(effective_urls)}")
+        logger.info(
+            f"Kling generating clip | model={model} | {duration}s"
+            f" | images={len(effective_urls)} | audio={'yes' if voice_element_audio_url else 'no'}"
+        )
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
 

@@ -404,15 +404,16 @@ async def settings_image_model(callback: CallbackQuery):
 async def settings_video_model(callback: CallbackQuery):
     await callback.answer()
     gemini = container.inject(GeminiService)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
+    rows = []
+    for m in gemini.get_video_models():
+        if m.get("separator"):
+            rows.append([InlineKeyboardButton(text=m["label"], callback_data="noop")])
+        else:
+            rows.append([InlineKeyboardButton(
                 text=f"{m['name']}  |  {m['price']}",
                 callback_data=f"video-model:{m['name']}",
-            )]
-            for m in gemini.get_video_models()
-        ]
-    )
+            )])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     await callback.message.answer("Choose video model:", reply_markup=keyboard)
 
 
@@ -563,6 +564,11 @@ async def handle_image_model_selected(callback: CallbackQuery):
         await callback.message.answer(f"✅ Image model: {model}")
     except Exception as e:
         await callback.message.answer(f"Error: {str(e)}")
+
+
+@router.callback_query(lambda c: c.data == "noop", IsAllowed(allowed_users))
+async def handle_noop(callback: CallbackQuery):
+    await callback.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("video-model:"), IsAllowed(allowed_users))
