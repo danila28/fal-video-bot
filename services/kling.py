@@ -24,16 +24,20 @@ logger = logging.getLogger(__name__)
 
 # ── Atlas Cloud model IDs ─────────────────────────────────────────────────────
 
-_V3_PRO_I2V   = "kwaivgi/kling-v3.0-pro/image-to-video"
-_V3_PRO_T2V   = "kwaivgi/kling-v3.0-pro/text-to-video"
-_V3_STD_I2V   = "kwaivgi/kling-v3.0-std/image-to-video"
-_O3_PRO_I2V   = "kwaivgi/kling-video-o3-pro/image-to-video"
-_O3_STD_I2V   = "kwaivgi/kling-video-o3-std/image-to-video"
-_O3_PRO_REF   = "kwaivgi/kling-video-o3-pro/reference-to-video"
-_O3_STD_REF   = "kwaivgi/kling-video-o3-std/reference-to-video"
-_V3_OMNI_I2V  = "kwaivgi/kling-video-o3-4k/image-to-video"
+_V3_PRO_I2V    = "kwaivgi/kling-v3.0-pro/image-to-video"
+_V3_PRO_T2V    = "kwaivgi/kling-v3.0-pro/text-to-video"
+_V3_STD_I2V    = "kwaivgi/kling-v3.0-std/image-to-video"
+_V3_TURBO_I2V  = "kwaivgi/kling-v3.0-turbo/image-to-video"
+_V3_TURBO_T2V  = "kwaivgi/kling-v3.0-turbo/text-to-video"
+_O3_PRO_I2V    = "kwaivgi/kling-video-o3-pro/image-to-video"
+_O3_STD_I2V    = "kwaivgi/kling-video-o3-std/image-to-video"
+_O3_PRO_REF    = "kwaivgi/kling-video-o3-pro/reference-to-video"
+_O3_STD_REF    = "kwaivgi/kling-video-o3-std/reference-to-video"
+_O3_PRO_EDIT   = "kwaivgi/kling-video-o3-pro/video-edit"
+_O3_STD_EDIT   = "kwaivgi/kling-video-o3-std/video-edit"
+_V3_OMNI_I2V   = "kwaivgi/kling-video-o3-4k/image-to-video"
 # Multi-frame guidances endpoint (up to 6 shots × 5s = 15s per call)
-_V3_MULTI     = "kling-v3"
+_V3_MULTI      = "kling-v3"
 
 # Backwards-compat aliases used by existing code
 _MODEL_IMAGE_TO_VIDEO = _V3_PRO_I2V
@@ -44,6 +48,8 @@ MODEL_IDS: dict[str, str] = {
     "kling":            _V3_PRO_I2V,
     "kling_t2v":        _V3_PRO_T2V,
     "kling_v3_std":     _V3_STD_I2V,
+    "kling_turbo":      _V3_TURBO_I2V,
+    "kling_turbo_t2v":  _V3_TURBO_T2V,
     "kling_o3_pro":     _O3_PRO_I2V,
     "kling_o3_std":     _O3_STD_I2V,
     "kling_o3_pro_ref": _O3_PRO_REF,
@@ -56,6 +62,8 @@ MODEL_LABELS: dict[str, str] = {
     "kling":            "Kling v3 Pro",
     "kling_t2v":        "Kling v3 Pro T2V",
     "kling_v3_std":     "Kling v3 Std",
+    "kling_turbo":      "Kling v3 Turbo",
+    "kling_turbo_t2v":  "Kling v3 Turbo T2V",
     "kling_o3_pro":     "Kling O3 Pro",
     "kling_o3_std":     "Kling O3 Std",
     "kling_o3_pro_ref": "Kling O3 Pro Reference",
@@ -151,6 +159,35 @@ class KlingService:
         )
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
+
+    async def upload_video(self, video_path: str) -> str:
+        """Upload a local video to Atlas Cloud storage. Returns public URL."""
+        url = await self._atlas.upload_file(video_path)
+        logger.info(f"Kling: uploaded video {video_path} → {url}")
+        return url
+
+    async def edit_video(
+        self,
+        video_path: str,
+        prompt: str,
+        image_urls: list[str] | None = None,
+        keep_original_sound: bool = True,
+        use_pro: bool = True,
+    ) -> str:
+        """Edit an existing video via text prompt (V2V). Returns local path to MP4."""
+        os.makedirs(self.static_dir, exist_ok=True)
+        video_url = await self.upload_video(video_path)
+        model = _O3_PRO_EDIT if use_pro else _O3_STD_EDIT
+        params: dict = {
+            "video": video_url,
+            "prompt": prompt,
+            "keep_original_sound": keep_original_sound,
+        }
+        if image_urls:
+            params["images"] = image_urls[:4]
+        logger.info(f"Kling Video-Edit | model={model} | prompt={prompt[:80]}…")
+        result_url = await self._atlas.generate_video(model, params)
+        return await self._atlas.download(result_url, ext="mp4")
 
     async def generate_clips(
         self,

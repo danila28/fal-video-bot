@@ -64,7 +64,7 @@ class GeminiService:
         ]
 
     def get_video_models(self):
-        # Atlas Cloud scene generation models. Pricing — approximate, verify at atlascloud.ai/pricing.
+        # Atlas Cloud scene generation models. Pricing is approximate; verify at atlascloud.ai/pricing.
         # Entries with separator=True render as non-clickable section headers in the keyboard.
         return [
             {"separator": True, "label": "── Seedance ──"},
@@ -76,11 +76,13 @@ class GeminiService:
             {"separator": True, "label": "── Kling ──"},
             {"name": "kling",              "price": "🖼 v3 Pro I2V · ~$0.10/sec"},
             {"name": "kling_v3_std",       "price": "🖼 v3 Std I2V · ~$0.07/sec"},
+            {"name": "kling_turbo",        "price": "🖼⚡ v3 Turbo I2V · ~$0.05/sec"},
             {"name": "kling_o3_pro",       "price": "🖼🏆 O3 Pro I2V · ~$0.14/sec"},
             {"name": "kling_o3_std",       "price": "🖼⚖️ O3 Std I2V · ~$0.10/sec"},
             {"name": "kling_o3_pro_ref",   "price": "🖼🎭 O3 Pro Ref · ~$0.14/sec"},
             {"name": "kling_o3_std_ref",   "price": "🖼🎭 O3 Std Ref · ~$0.10/sec"},
             {"name": "kling_t2v",          "price": "📝 v3 Pro T2V · ~$0.10/sec"},
+            {"name": "kling_turbo_t2v",    "price": "📝⚡ v3 Turbo T2V · ~$0.05/sec"},
             {"separator": True, "label": "── 🎙 Lip-Sync (нужен голос + фото) ──"},
             {"name": "kling_omni",         "price": "🎙 Kling v3 Omni · ~$0.12/sec"},
             {"name": "seedance_audio_ref", "price": "🎙 Seedance Audio Ref · ~$0.08/sec"},

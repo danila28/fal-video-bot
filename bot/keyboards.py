@@ -48,6 +48,7 @@ def get_video_keyboard(subtitles_on: bool = True):
             [InlineKeyboardButton(text="Continue", callback_data="video_ok")],
             [InlineKeyboardButton(text="Change prompt", callback_data="video_prompt_change")],
             [InlineKeyboardButton(text="Regenerate", callback_data="video_regenerate")],
+            [InlineKeyboardButton(text="✏️ Edit video", callback_data="video_edit")],
             [InlineKeyboardButton(text=subs_label, callback_data="video_subtitles_toggle")],
         ]
     )

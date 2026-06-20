@@ -28,6 +28,7 @@ class GenerationState(StatesGroup):
     EDIT_SCENE = State()
     EDIT_VOICEOVER = State()
     CONFIRM_VIDEO = State()
+    VIDEO_EDIT_PROMPT = State()
     CONFIRM_PUBLISH = State()
     SET_VIDEO_TITLE = State()
     SELECT_PUBLISH_TIME = State()

@@ -28,6 +28,7 @@ from bot.states import GenerationState
 from services.db import DBService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
+from services.kling import KlingService
 from utils import container
 from utils.consts import allowed_users, generate_hashtags_prompt
 from utils.tg import send_long_message
@@ -672,3 +673,66 @@ async def handle_video_subtitles_toggle(callback: CallbackQuery, state: FSMConte
         )
     except Exception as e:
         await callback.message.answer(f"Error: {e}", reply_markup=get_video_keyboard(currently_on))
+
+
+@router.callback_query(GenerationState.CONFIRM_VIDEO, lambda c: c.data == "video_edit", IsAllowed(allowed_users))
+async def handle_video_edit_click(callback: CallbackQuery, state: FSMContext):
+    """Ask user for edit prompt, then switch to VIDEO_EDIT_PROMPT state."""
+    if await _is_generating(state):
+        await callback.answer("Already generating — please wait.", show_alert=False)
+        return
+    await callback.answer()
+    data = await state.get_data()
+    video_path = data.get("video_path_base") or data.get("video_path_raw")
+    if not video_path or not os.path.exists(video_path):
+        await callback.message.answer("❌ Video file not found — please regenerate first.")
+        return
+    await callback.message.answer(
+        "✏️ <b>Describe what to change in the video</b>\n"
+        "Examples: <i>change background to sunset beach</i>, "
+        "<i>add snow falling</i>, <i>make it look like anime</i>",
+        parse_mode="HTML",
+    )
+    await state.set_state(GenerationState.VIDEO_EDIT_PROMPT)
+
+
+@router.message(GenerationState.VIDEO_EDIT_PROMPT, IsAllowed(allowed_users))
+async def handle_video_edit_prompt(message: Message, state: FSMContext):
+    """Upload current video to Atlas, run Kling Video-Edit, show result."""
+    if await _is_generating(state):
+        await message.answer("Already generating — please wait.")
+        return
+    await state.update_data(generation_in_progress=True, generation_started_at=time.time())
+    data = await state.get_data()
+    subtitles_on = data.get("subtitles_on", False)
+    try:
+        video_path = data.get("video_path_base") or data.get("video_path_raw")
+        if not video_path or not os.path.exists(video_path):
+            await message.answer("❌ Video file not found — please regenerate first.")
+            return
+
+        edit_prompt = message.text or ""
+        await message.answer("⏳ Uploading video & applying edit — takes ~3-5 min…")
+
+        kling = container.inject(KlingService)
+        edited_path = await kling.edit_video(video_path, edit_prompt)
+
+        if not os.path.exists(edited_path):
+            raise FileNotFoundError(f"Edited video not found: {edited_path}")
+
+        await message.answer_video(FSInputFile(edited_path), caption="video")
+        # Replace base video with edited version; keep subtitles state
+        await state.update_data(
+            video_path=edited_path,
+            video_path_base=edited_path,
+            video_path_raw=edited_path,
+            video_path_subbed=None,
+            subtitles_on=False,
+        )
+        await message.answer("✅ Edit applied!\nContinue?", reply_markup=get_video_keyboard(False))
+    except Exception as e:
+        logger.error(f"Video-Edit error: {e}", exc_info=True)
+        await message.answer(f"Error: {e}\nTry again", reply_markup=get_video_keyboard(subtitles_on))
+    finally:
+        await state.update_data(generation_in_progress=False)
+        await state.set_state(GenerationState.CONFIRM_VIDEO)

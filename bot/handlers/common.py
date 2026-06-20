@@ -268,7 +268,7 @@ async def _generate_seedance(
         )
 
         _scene_for_audio_ref = (
-            shots[0]["scene_prompt"]
+            _build_shot_prompt(shots[0])
             if shots and shots[0].get("scene_prompt")
             else _strip_voiceover(video_prompt)
         )
@@ -294,7 +294,7 @@ async def _generate_seedance(
     clip_dur = _clip_duration_for_model(model)
 
     if shots:
-        scenes = [s.get("scene_prompt", "") for s in shots]
+        scenes = [_build_shot_prompt(s) for s in shots]
         durations = [int(max(4, min(12, s.get("duration_seconds", clip_dur)))) for s in shots]
         transitions = [s.get("transition", "cut") for s in shots]
     else:
@@ -415,7 +415,7 @@ async def _generate_kling(
         )
 
         _scene_for_omni = (
-            shots[0]["scene_prompt"]
+            _build_shot_prompt(shots[0])
             if shots and shots[0].get("scene_prompt")
             else _strip_voiceover(video_prompt)
         )
@@ -442,7 +442,7 @@ async def _generate_kling(
     negative_prompt = settings.get("negative_prompt") or ""
 
     if shots:
-        scenes = [s.get("scene_prompt", "") for s in shots]
+        scenes = [_build_shot_prompt(s) for s in shots]
         shot_durations_list = [int(max(3, min(10, s.get("duration_seconds", clip_dur)))) for s in shots]
         shot_transitions = [s.get("transition", "cut") for s in shots]
     else:
@@ -666,7 +666,7 @@ async def _generate_happyhorse(
 
     # Use the scene description (without voiceover) as the animation prompt.
     if shots and shots[0].get("scene_prompt"):
-        scene_only = shots[0]["scene_prompt"]
+        scene_only = _build_shot_prompt(shots[0])
     else:
         scene_only = _strip_voiceover(video_prompt)
     raw_video = await horse.generate_clip(
@@ -701,7 +701,7 @@ async def _generate_pixverse(
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
 
     if shots:
-        scenes = [s.get("scene_prompt", "") for s in shots]
+        scenes = [_build_shot_prompt(s) for s in shots]
         durations = [int(max(3, min(8, s.get("duration_seconds", 5)))) for s in shots]
         transitions = [s.get("transition", "cut") for s in shots]
     else:
@@ -897,13 +897,18 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
         scene_prompt_rule = (
             f"scene_prompt MUST describe the FULL {actual_duration}s visual journey: "
             "opening shot → action beats → closing frame. "
-            "Include camera movements, scene changes, character actions. Min 50 words. NOT a static scene. "
-            "English ONLY, visuals ONLY — no spoken text."
+            "Include scene changes, character actions. Min 50 words. NOT a static scene. "
+            "English ONLY, visuals ONLY — no spoken text, no camera directions here."
+        )
+        camera_motion_rule = (
+            f"camera_motion: full camera journey for {actual_duration}s "
+            "(e.g. 'extreme close-up → slow pull-back → wide establishing shot')"
         )
     else:
         shots_count_rule = f"shots array has EXACTLY {n_clips} elements"
         transition_rule  = "'cut' for action/pace/energy, 'dissolve' for mood shift/scene change, 'fade' for the FINAL shot ONLY"
-        scene_prompt_rule = "scene_prompt: English ONLY, describe VISUALS only — never include spoken text"
+        scene_prompt_rule = "scene_prompt: English ONLY, describe VISUALS only — no camera directions here, no spoken text"
+        camera_motion_rule = "camera_motion: 3-8 words, camera movement for THIS shot only (e.g. 'slow push-in', 'pan left', 'static wide', 'crane up', 'orbit right')"
 
     _JSON_SYS = (
         "Output ONLY valid JSON. No prose. No markdown fences. Schema:\n"
@@ -915,7 +920,8 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
         '    {\n'
         '      "index": 0,\n'
         f'      "duration_seconds": {clip_duration},\n'
-        '      "scene_prompt": "camera angle + subject action + lighting (English ONLY, visuals ONLY)",\n'
+        '      "scene_prompt": "subject action + setting + lighting (English ONLY, visuals ONLY)",\n'
+        '      "camera_motion": "camera movement description",\n'
         '      "transition": "cut | dissolve | fade"\n'
         '    }\n'
         '  ]\n'
@@ -924,6 +930,7 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
         f"- {shots_count_rule}\n"
         f"- duration_seconds = ceil(word_count_for_this_shot / 2.5), min {min_dur}s max {max_dur}s\n"
         f"- {scene_prompt_rule}\n"
+        f"- {camera_motion_rule}\n"
         "- spoken_text: MUST be in the same language as the user input\n"
         "- caption: same language as spoken_text\n"
         f"- transition: {transition_rule}\n"
@@ -1049,6 +1056,13 @@ def _extract_first_scene(video_prompt: str, gemini) -> str:
     return " ".join(block)
 
 
+def _build_shot_prompt(shot: dict) -> str:
+    """Combine scene_prompt + camera_motion into one prompt string for video models."""
+    scene = shot.get("scene_prompt", "")
+    cam = shot.get("camera_motion", "")
+    return f"{scene}. Camera: {cam}." if cam else scene
+
+
 def _split_video_prompt(video_prompt: str, gemini) -> tuple[str, str]:
     # JSON format from Gemini structured output
     parsed = GeminiService.parse_script_json(video_prompt)
@@ -1061,10 +1075,12 @@ def _split_video_prompt(video_prompt: str, gemini) -> tuple[str, str]:
                 dur = shot.get("duration_seconds", "?")
                 trans = shot.get("transition", "cut")
                 prompt = shot.get("scene_prompt", "")
+                cam = shot.get("camera_motion", "")
+                cam_str = f" | {cam}" if cam else ""
                 if len(shots) == 1:
-                    parts.append(f"Shot 1 ({dur}s): {prompt}")
+                    parts.append(f"Shot 1 ({dur}s{cam_str}): {prompt}")
                 else:
-                    parts.append(f"[Shot {i + 1}, {dur}s, {trans}] {prompt}")
+                    parts.append(f"[Shot {i + 1}, {dur}s, {trans}{cam_str}] {prompt}")
             scene = "\n".join(parts)
         else:
             scene = ""
