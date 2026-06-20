@@ -281,11 +281,6 @@ async def _generate_seedance(
     n_clips = max(1, math.ceil(target_duration / clip_dur))
 
     scenes = _split_scene_into_shots(video_prompt, n_clips)
-    await notify(
-        f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
-        + (f", {len(valid_paths)} ref photo(s)" if valid_paths else "")
-        + ") — each clip takes ~3-5 min…"
-    )
 
     is_t2v = model in _T2V_VIDEO_MODELS
     is_ref = "ref" in model and model != "seedance_audio_ref"
@@ -296,6 +291,10 @@ async def _generate_seedance(
 
         if is_ref:
             # Reference models: every clip gets ALL images for character consistency
+            await notify(
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+                + f", {len(valid_paths)} ref photo(s)) — each clip takes ~3-5 min…"
+            )
             anchor_urls = [uploaded_urls[0]] * len(scenes)
             clips = await seedance.generate_clips(
                 scene_prompts=scenes,
@@ -304,17 +303,23 @@ async def _generate_seedance(
                 model_id=atlas_model_id,
                 all_reference_urls=uploaded_urls,
             )
+            raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
         else:
-            # I2V models: cycle images across clips for visual variety
-            n = len(uploaded_urls)
-            anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
-            clips = await seedance.generate_clips(
+            # I2V: single API call with [Scene1]...[SceneN] markers (Seedance multi-scene)
+            await notify(
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s) × {clip_dur}s"
+                + f", single call) — takes ~3-5 min…"
+            )
+            raw_video = await seedance.generate_multi_scene_clip(
                 scene_prompts=scenes,
-                anchor_photo_urls=anchor_urls,
-                clip_duration=clip_dur,
-                model_id=atlas_model_id,
+                image_url=uploaded_urls[0],
+                durations=[clip_dur] * len(scenes),
             )
     else:
+        await notify(
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+            + ") — each clip takes ~3-5 min…"
+        )
         clips = []
         for i, prompt in enumerate(scenes):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
@@ -325,8 +330,8 @@ async def _generate_seedance(
             )
             clip = await seedance.generate_clip(prompt=effective, duration=clip_dur, model_id=atlas_model_id)
             clips.append(clip)
+        raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
 
-    raw_video = await gemini.concat_videos(clips, crossfade=0) if len(clips) > 1 else clips[0]
     await notify(f"✅ {label} clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -407,6 +412,9 @@ async def _generate_kling(
     is_t2v = model in _T2V_VIDEO_MODELS
     is_ref = "ref" in model
 
+    # Native Kling audio when no voiceover is planned (Point 5)
+    use_native_audio = not bool(voiceover_text and voiceover_text.strip())
+
     # ── Multi-frame path (kling, kling_v3_std, kling_t2v) ────────────────────
     if model in _KLING_MF_KEYS:
         _SHOTS_PER_BATCH = 3  # 3 × 5s = 15s per guidances call
@@ -422,6 +430,7 @@ async def _generate_kling(
             f"⏱ Generating <b>{label}</b> multi-frame"
             f" ({len(scenes)} shots → {n_batches} batch(es) × 15s"
             + (f", ref photo" if ref_url else "")
+            + (f", native audio" if use_native_audio else "")
             + ") — ~2-4 min per batch…"
         )
 
@@ -434,6 +443,7 @@ async def _generate_kling(
                 scene_prompts=batch,
                 shot_duration=clip_dur,
                 image_reference_url=current_ref_url,
+                motion_has_audio=use_native_audio,
                 face_consistency=bool(current_ref_url),
                 negative_prompt=negative_prompt,
             )
@@ -498,7 +508,7 @@ async def _generate_kling(
             )
             clips.append(clip)
 
-    raw_video = await gemini.concat_videos(clips, crossfade=0) if len(clips) > 1 else clips[0]
+    raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
     await notify(f"✅ {label} clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -508,7 +518,7 @@ async def _generate_kling(
         "tts_audio_path": tts_audio_path,
         "word_timings": word_timings,
         "voiceover_text": voiceover_text,
-        "has_native_audio": False,
+        "has_native_audio": use_native_audio,
     }
 
 
@@ -605,7 +615,7 @@ async def _generate_pixverse(
             clip = await pixverse.generate_clip(prompt=prompt, duration=5)
             clips.append(clip)
 
-    raw_video = await gemini.concat_videos(clips, crossfade=0) if len(clips) > 1 else clips[0]
+    raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
     await notify("✅ PixVerse clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -757,19 +767,21 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
 
     _FORMAT_SUFFIX = (
         f"\n\n--- OUTPUT FORMAT (mandatory) ---\n"
-        f"Write TWO sections only:\n\n"
+        f"Write THREE sections only:\n\n"
         f"{scene_instruction}\n\n"
         f'Voiceover: "narration text of approximately {target_words} words '
         f'({actual_duration} seconds at natural talking pace)"\n\n'
+        f'Caption: "engaging social-media caption with 3-5 relevant hashtags (max 150 chars)"\n\n'
         f"Rules:\n"
         f"{shots_rule}\n"
         f"- Scene description MUST be written in English regardless of the input language\n"
         f"- Voiceover MUST be written in the same language as the input\n"
+        f"- Caption MUST be in the same language as the Voiceover\n"
         f"- Each shot must sync with what is spoken in the Voiceover at that moment\n"
         f"- Scene must depict EXACTLY the topic from the input\n"
         f"- Do NOT use markdown (>, **, *)\n"
-        f"- The word Voiceover: appears ONLY ONCE\n"
-        f"- Use straight double quotes around the narration\n"
+        f"- The words Voiceover: and Caption: each appear ONLY ONCE\n"
+        f"- Use straight double quotes around the narration and caption\n"
         f"- G-rated, child-safe content only"
     )
 

@@ -160,6 +160,46 @@ class SeedanceService:
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
 
+    async def generate_multi_scene_clip(
+        self,
+        scene_prompts: list[str],
+        image_url: str = "",
+        durations: list[int] | None = None,
+        aspect_ratio: str = "9:16",
+        resolution: str = "720p",
+    ) -> str:
+        """Single Atlas API call with [Scene1]...[SceneN] markers + durations array.
+
+        All scenes are rendered by the model in one shot, preserving visual
+        continuity without the need for last-frame stitching.
+        """
+        os.makedirs(self.static_dir, exist_ok=True)
+        if durations is None:
+            durations = [10] * len(scene_prompts)
+
+        combined_prompt = " ".join(
+            f"[Scene{i + 1}] {p}" for i, p in enumerate(scene_prompts)
+        )
+
+        model = _I2V if image_url else _T2V
+        params: dict = {
+            "prompt": combined_prompt,
+            "durations": durations,
+            "ratio": aspect_ratio,
+            "resolution": resolution,
+            "generate_audio": False,
+            "watermark": False,
+        }
+        if image_url:
+            params["image_url"] = image_url
+
+        logger.info(
+            f"Seedance multi-scene | model={model} | scenes={len(scene_prompts)}"
+            f" | durations={durations}"
+        )
+        video_url = await self._atlas.generate_video(model, params)
+        return await self._atlas.download(video_url, ext="mp4")
+
     async def generate_clips(
         self,
         scene_prompts: list[str],
