@@ -2,9 +2,9 @@
 
 Backends chosen via `model` parameter:
 
-  Vertex AI (Gemini image models):
-  • gemini-3.1-flash-image  — Nano Banana 2  (fast, affordable)
-  • gemini-3-pro-image       — Nano Banana Pro (highest quality)
+  Google Gemini API (standard API key, no Vertex AI):
+  • gemini-2.0-flash-preview-image-generation  — fast, affordable
+  • imagen-3.0-generate-001                    — Imagen 3, highest quality
 
   Atlas Cloud:
   • black-forest-labs/flux-2-pro/text-to-image       — FLUX 2 Pro (universal)
@@ -31,14 +31,18 @@ _FLUX_MODEL         = "black-forest-labs/flux-2-pro/text-to-image"
 _FLUX_KONTEXT_MODEL = "black-forest-labs/flux-kontext-pro-text-to-image"
 _IDEOGRAM_MODEL     = "ideogram/ideogram-v3/text-to-image"
 
-_VERTEX_IMAGE_MODELS = {"gemini-3.1-flash-image", "gemini-3-pro-image"}
+# Gemini native image generation (generate_content + IMAGE modality)
+_GEMINI_IMAGE_MODELS = {"gemini-2.0-flash-preview-image-generation"}
+# Imagen 3 — uses generate_images() API
+_IMAGEN_MODELS       = {"imagen-3.0-generate-001"}
+_GOOGLE_IMAGE_MODELS = _GEMINI_IMAGE_MODELS | _IMAGEN_MODELS
 
 
 class ImageGenService:
     def __init__(self, api_key: str = "", atlas_api_key: str = "", static_dir: str = ""):
         self._atlas = AtlasClient(atlas_api_key, static_dir) if atlas_api_key else None
-        # Vertex client — same API key, vertexai=True routes to Google Cloud
-        self._vertex = genai.Client(api_key=api_key, vertexai=True) if api_key else None
+        # Standard Gemini API client (API key only, no vertexai=True)
+        self._gemini = genai.Client(api_key=api_key) if api_key else None
         if not static_dir:
             static_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
@@ -55,15 +59,16 @@ class ImageGenService:
             raise RuntimeError("ATLAS_API_KEY is required for image generation")
         return self._atlas
 
-    def _require_vertex(self) -> genai.Client:
-        if self._vertex is None:
-            raise RuntimeError("GEMINI_API_KEY is required for Vertex image generation")
-        return self._vertex
+    def _require_gemini(self) -> genai.Client:
+        if self._gemini is None:
+            raise RuntimeError("GEMINI_API_KEY is required for Google image generation")
+        return self._gemini
 
-    # ── Vertex backends ───────────────────────────────────────────────────
+    # ── Google backends ───────────────────────────────────────────────────
 
-    async def _generate_via_vertex(self, prompt: str, model: str) -> str:
-        client = self._require_vertex()
+    async def _generate_via_gemini(self, prompt: str, model: str) -> str:
+        """Gemini native image generation via generate_content + IMAGE modality."""
+        client = self._require_gemini()
         os.makedirs(self.static_dir, exist_ok=True)
 
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
@@ -80,7 +85,7 @@ class ImageGenService:
         )
 
         if getattr(response, "prompt_feedback", None) is not None:
-            raise RuntimeError(f"Vertex image blocked: {response.prompt_feedback}")
+            raise RuntimeError(f"Gemini image blocked: {response.prompt_feedback}")
 
         for cand in getattr(response, "candidates", []) or []:
             for part in getattr(getattr(cand, "content", None), "parts", []) or []:
@@ -89,10 +94,39 @@ class ImageGenService:
                     path = os.path.join(self.static_dir, f"{uuid.uuid4()}.png")
                     with open(path, "wb") as f:
                         f.write(inline.data)
-                    logger.info(f"Vertex image saved: {path}")
+                    logger.info(f"Gemini image saved: {path}")
                     return path
 
-        raise RuntimeError(f"Vertex model {model} returned no image data")
+        raise RuntimeError(f"Gemini model {model} returned no image data")
+
+    async def _generate_via_imagen(self, prompt: str, model: str) -> str:
+        """Imagen 3 via generate_images() API."""
+        client = self._require_gemini()
+        os.makedirs(self.static_dir, exist_ok=True)
+
+        config = types.GenerateImagesConfig(
+            number_of_images=1,
+            aspect_ratio="9:16",
+            output_mime_type="image/png",
+        )
+
+        response = await asyncio.to_thread(
+            client.models.generate_images,
+            model=model,
+            prompt=prompt,
+            config=config,
+        )
+
+        for img in getattr(response, "generated_images", []) or []:
+            image_bytes = getattr(getattr(img, "image", None), "image_bytes", None)
+            if image_bytes:
+                path = os.path.join(self.static_dir, f"{uuid.uuid4()}.png")
+                with open(path, "wb") as f:
+                    f.write(image_bytes)
+                logger.info(f"Imagen image saved: {path}")
+                return path
+
+        raise RuntimeError(f"Imagen model {model} returned no image data")
 
     # ── Atlas backends ────────────────────────────────────────────────────
 
@@ -161,8 +195,10 @@ class ImageGenService:
         logger.info(f"Image generation | model={model} | aspect={aspect_ratio} | prompt={prompt[:80]}…")
 
         try:
-            if model in _VERTEX_IMAGE_MODELS:
-                return await self._generate_via_vertex(prompt, model)
+            if model in _GEMINI_IMAGE_MODELS:
+                return await self._generate_via_gemini(prompt, model)
+            if model in _IMAGEN_MODELS:
+                return await self._generate_via_imagen(prompt, model)
             if model == _FLUX_KONTEXT_MODEL:
                 return await self._generate_via_kontext(prompt, aspect_ratio)
             if model == _IDEOGRAM_MODEL:

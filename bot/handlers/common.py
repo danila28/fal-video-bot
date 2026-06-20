@@ -295,7 +295,7 @@ async def _generate_seedance(
 
     if shots:
         scenes = [s.get("scene_prompt", "") for s in shots]
-        durations = [max(4, min(12, s.get("duration_seconds", clip_dur))) for s in shots]
+        durations = [int(max(4, min(12, s.get("duration_seconds", clip_dur)))) for s in shots]
         transitions = [s.get("transition", "cut") for s in shots]
     else:
         n_clips = max(1, math.ceil(target_duration / clip_dur))
@@ -443,7 +443,7 @@ async def _generate_kling(
 
     if shots:
         scenes = [s.get("scene_prompt", "") for s in shots]
-        shot_durations_list = [max(3, min(10, s.get("duration_seconds", clip_dur))) for s in shots]
+        shot_durations_list = [int(max(3, min(10, s.get("duration_seconds", clip_dur)))) for s in shots]
         shot_transitions = [s.get("transition", "cut") for s in shots]
     else:
         n_clips = max(1, math.ceil(target_duration / clip_dur))
@@ -644,7 +644,7 @@ async def _generate_happyhorse(
     """
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     if shots and shots[0].get("duration_seconds"):
-        clip_duration = max(3, min(15, shots[0]["duration_seconds"]))
+        clip_duration = int(max(3, min(15, shots[0]["duration_seconds"])))
     else:
         clip_duration = max(3, min(15, target_duration))
     resolution = settings.get("video_resolution", "720p")
@@ -702,7 +702,7 @@ async def _generate_pixverse(
 
     if shots:
         scenes = [s.get("scene_prompt", "") for s in shots]
-        durations = [max(3, min(8, s.get("duration_seconds", 5))) for s in shots]
+        durations = [int(max(3, min(8, s.get("duration_seconds", 5)))) for s in shots]
         transitions = [s.get("transition", "cut") for s in shots]
     else:
         n_clips = max(1, math.ceil(target_duration / 5))
@@ -894,9 +894,16 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
     if is_single_clip:
         shots_count_rule = "shots array has EXACTLY 1 element"
         transition_rule  = "the 1 shot must use transition 'fade'"
+        scene_prompt_rule = (
+            f"scene_prompt MUST describe the FULL {actual_duration}s visual journey: "
+            "opening shot → action beats → closing frame. "
+            "Include camera movements, scene changes, character actions. Min 50 words. NOT a static scene. "
+            "English ONLY, visuals ONLY — no spoken text."
+        )
     else:
         shots_count_rule = f"shots array has EXACTLY {n_clips} elements"
         transition_rule  = "'cut' for action/pace/energy, 'dissolve' for mood shift/scene change, 'fade' for the FINAL shot ONLY"
+        scene_prompt_rule = "scene_prompt: English ONLY, describe VISUALS only — never include spoken text"
 
     _JSON_SYS = (
         "Output ONLY valid JSON. No prose. No markdown fences. Schema:\n"
@@ -916,7 +923,7 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
         "Rules:\n"
         f"- {shots_count_rule}\n"
         f"- duration_seconds = ceil(word_count_for_this_shot / 2.5), min {min_dur}s max {max_dur}s\n"
-        "- scene_prompt: English ONLY, describe VISUALS only — never include spoken text\n"
+        f"- {scene_prompt_rule}\n"
         "- spoken_text: MUST be in the same language as the user input\n"
         "- caption: same language as spoken_text\n"
         f"- transition: {transition_rule}\n"
