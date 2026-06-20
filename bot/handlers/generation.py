@@ -185,9 +185,13 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
                 gemini.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
             )
             scene, voiceover = _split_video_prompt(video_prompt, gemini)
+            parsed_vp = GeminiService.parse_script_json(video_prompt)
+            if parsed_vp and parsed_vp.get("caption"):
+                hashtags = parsed_vp["caption"]
             await state.update_data(
                 video_scene=scene,
                 video_voiceover=voiceover,
+                video_script_json=video_prompt,
                 cached_hashtags=hashtags,
             )
             text = _format_video_prompt_message(scene, voiceover)
@@ -340,9 +344,13 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
         )
 
         scene, voiceover = _split_video_prompt(video_prompt, gemini)
+        parsed_vp = GeminiService.parse_script_json(video_prompt)
+        if parsed_vp and parsed_vp.get("caption"):
+            hashtags = parsed_vp["caption"]
         await state.update_data(
             video_scene=scene,
             video_voiceover=voiceover,
+            video_script_json=video_prompt,
             cached_hashtags=hashtags,
         )
 
@@ -400,7 +408,7 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
         video_prompt = await _build_video_prompt(data.get("enhance_prompt", ""), settings, gemini)
         new_scene, _ = _split_video_prompt(video_prompt, gemini)
         voiceover = data.get("video_voiceover", "")
-        await state.update_data(video_scene=new_scene)
+        await state.update_data(video_scene=new_scene, video_script_json=video_prompt)
         await _show_video_prompt(callback.message, new_scene, voiceover)
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
@@ -424,7 +432,7 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
         video_prompt = await _build_video_prompt(data.get("enhance_prompt", ""), settings, gemini)
         _, new_voiceover = _split_video_prompt(video_prompt, gemini)
         scene = data.get("video_scene", "")
-        await state.update_data(video_voiceover=new_voiceover)
+        await state.update_data(video_voiceover=new_voiceover, video_script_json=video_prompt)
         await _show_video_prompt(callback.message, scene, new_voiceover)
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
@@ -451,7 +459,7 @@ async def handle_vp_scene_edit(callback: CallbackQuery, state: FSMContext):
 @router.message(GenerationState.EDIT_SCENE, IsAllowed(allowed_users))
 async def handle_edit_scene_input(message: Message, state: FSMContext):
     data = await state.get_data()
-    await state.update_data(video_scene=message.text)
+    await state.update_data(video_scene=message.text, video_script_json=None)
     await _show_video_prompt(message, message.text, data.get("video_voiceover", ""))
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
 
@@ -512,6 +520,7 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             voiceover_text=video_voiceover,
             image_paths=image_paths,
             notify=callback.message.answer,
+            script_json=data.get("video_script_json") or "",
         )
 
         subs_default = settings.get("subtitles_enabled", True)

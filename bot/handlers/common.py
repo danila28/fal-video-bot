@@ -2,6 +2,7 @@
 
 import asyncio
 import html
+import json as _json
 import logging
 import math
 import os
@@ -179,6 +180,7 @@ async def generate_video_for_model(
     voiceover_text: str,
     image_paths: list[str] | None,
     notify,
+    script_json: str = "",
 ) -> dict:
     """Route to the correct generation function based on `settings['video_model']`.
 
@@ -191,30 +193,36 @@ async def generate_video_for_model(
     """
     model = (settings.get("video_model") or "seedance").lower()
 
+    shots: list[dict] | None = None
+    if script_json:
+        parsed = GeminiService.parse_script_json(script_json)
+        if parsed is not None:
+            shots = parsed.get("shots") or None
+
     if model in {"kling", "kling_t2v", "kling_omni", "kling_v3_std", "kling_o3_pro", "kling_o3_std",
                  "kling_o3_pro_ref", "kling_o3_std_ref"}:
         return await _generate_kling(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_paths=image_paths, notify=notify,
+            image_paths=image_paths, notify=notify, shots=shots,
         )
     if model == "happy_horse":
         return await _generate_happyhorse(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_paths=image_paths, notify=notify,
+            image_paths=image_paths, notify=notify, shots=shots,
         )
     if model == "pixverse":
         return await _generate_pixverse(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_paths=image_paths, notify=notify,
+            image_paths=image_paths, notify=notify, shots=shots,
         )
     # Seedance variants (default)
     return await _generate_seedance(
         gemini=gemini, settings=settings,
         video_prompt=video_prompt, voiceover_text=voiceover_text,
-        image_paths=image_paths, notify=notify,
+        image_paths=image_paths, notify=notify, shots=shots,
     )
 
 
@@ -228,6 +236,7 @@ async def _generate_seedance(
     voiceover_text: str,
     image_paths: list[str] | None,
     notify,
+    shots: list[dict] | None = None,
 ) -> dict:
     from services.seedance import MODEL_IDS as _SEEDANCE_IDS, MODEL_LABELS as _SEEDANCE_LABELS
     model = (settings.get("video_model") or "seedance").lower()
@@ -258,8 +267,13 @@ async def _generate_seedance(
             *[seedance.upload_photo(p) for p in valid_paths],
         )
 
+        _scene_for_audio_ref = (
+            shots[0]["scene_prompt"]
+            if shots and shots[0].get("scene_prompt")
+            else _strip_voiceover(video_prompt)
+        )
         raw_video = await seedance.generate_clip(
-            prompt=_strip_voiceover(video_prompt),
+            prompt=_scene_for_audio_ref or video_prompt,
             image_urls=img_urls,
             audio_ref_url=audio_url,
             duration=10,
@@ -278,59 +292,72 @@ async def _generate_seedance(
     # ── Regular Seedance I2V / T2V / Reference path ───────────────────────────
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     clip_dur = _clip_duration_for_model(model)
-    n_clips = max(1, math.ceil(target_duration / clip_dur))
 
-    scenes = _split_scene_into_shots(video_prompt, n_clips)
+    if shots:
+        scenes = [s.get("scene_prompt", "") for s in shots]
+        durations = [max(4, min(12, s.get("duration_seconds", clip_dur))) for s in shots]
+        transitions = [s.get("transition", "cut") for s in shots]
+    else:
+        n_clips = max(1, math.ceil(target_duration / clip_dur))
+        scenes = _split_scene_into_shots(video_prompt, n_clips)
+        durations = [clip_dur] * len(scenes)
+        transitions = None
 
     is_t2v = model in _T2V_VIDEO_MODELS
     is_ref = "ref" in model and model != "seedance_audio_ref"
 
     if not is_t2v and valid_paths:
-        # Upload all reference images in parallel
         uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
 
         if is_ref:
-            # Reference models: every clip gets ALL images for character consistency
             await notify(
-                f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
                 + f", {len(valid_paths)} ref photo(s)) — each clip takes ~3-5 min…"
             )
-            anchor_urls = [uploaded_urls[0]] * len(scenes)
-            clips = await seedance.generate_clips(
-                scene_prompts=scenes,
-                anchor_photo_urls=anchor_urls,
-                clip_duration=clip_dur,
-                model_id=atlas_model_id,
-                all_reference_urls=uploaded_urls,
-            )
-            raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
+            clips = []
+            for i, (scene, dur) in enumerate(zip(scenes, durations)):
+                effective = (
+                    "Seamlessly continuing from previous scene — "
+                    "same lighting, same background, same camera angle, smooth action flow. " + scene
+                    if i > 0 else scene
+                )
+                clip = await seedance.generate_clip(
+                    prompt=effective,
+                    image_urls=uploaded_urls,
+                    duration=dur,
+                    model_id=atlas_model_id,
+                )
+                clips.append(clip)
+            concat_transitions = transitions[:-1] if transitions else None
+            raw_video = await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions) if len(clips) > 1 else clips[0]
         else:
-            # I2V: single API call with [Scene1]...[SceneN] markers (Seedance multi-scene)
+            # I2V: single multi-scene API call with [Scene1]...[SceneN] markers
             await notify(
-                f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s) × {clip_dur}s"
-                + f", single call) — takes ~3-5 min…"
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s)"
+                + (", single call" if len(scenes) > 1 else "")
+                + ") — takes ~3-5 min…"
             )
             raw_video = await seedance.generate_multi_scene_clip(
                 scene_prompts=scenes,
                 image_url=uploaded_urls[0],
-                durations=[clip_dur] * len(scenes),
+                durations=durations,
             )
     else:
         await notify(
-            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
-            + ") — each clip takes ~3-5 min…"
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)) — each clip takes ~3-5 min…"
         )
         clips = []
-        for i, prompt in enumerate(scenes):
+        for i, (scene, dur) in enumerate(zip(scenes, durations)):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
             effective = (
                 "Seamlessly continuing from previous scene — "
-                "same characters, same lighting, smooth flow. " + prompt
-                if i > 0 else prompt
+                "same characters, same lighting, smooth flow. " + scene
+                if i > 0 else scene
             )
-            clip = await seedance.generate_clip(prompt=effective, duration=clip_dur, model_id=atlas_model_id)
+            clip = await seedance.generate_clip(prompt=effective, duration=dur, model_id=atlas_model_id)
             clips.append(clip)
-        raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
+        concat_transitions = transitions[:-1] if transitions else None
+        raw_video = await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions) if len(clips) > 1 else clips[0]
 
     await notify(f"✅ {label} clips ready")
 
@@ -353,6 +380,7 @@ async def _generate_kling(
     voiceover_text: str,
     image_paths: list[str] | None,
     notify,
+    shots: list[dict] | None = None,
 ) -> dict:
     from services.kling import MODEL_IDS as _KLING_IDS, MODEL_LABELS as _KLING_LABELS
     model = (settings.get("video_model") or "kling").lower()
@@ -386,8 +414,13 @@ async def _generate_kling(
             *[kling.upload_photo(p) for p in valid_paths],
         )
 
+        _scene_for_omni = (
+            shots[0]["scene_prompt"]
+            if shots and shots[0].get("scene_prompt")
+            else _strip_voiceover(video_prompt)
+        )
         raw_video = await kling.generate_clip(
-            prompt=_strip_voiceover(video_prompt),
+            prompt=_scene_for_omni or video_prompt,
             image_urls=img_urls,
             voice_element_audio_url=audio_url,
             duration=clip_dur_sec,
@@ -406,42 +439,62 @@ async def _generate_kling(
     from services.kling import MULTIFRAME_SETTINGS_KEYS as _KLING_MF_KEYS
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     clip_dur = _clip_duration_for_model(model)
-    n_clips = max(1, math.ceil(target_duration / clip_dur))
     negative_prompt = settings.get("negative_prompt") or ""
-    scenes = _split_scene_into_shots(video_prompt, n_clips)
+
+    if shots:
+        scenes = [s.get("scene_prompt", "") for s in shots]
+        shot_durations_list = [max(3, min(10, s.get("duration_seconds", clip_dur))) for s in shots]
+        shot_transitions = [s.get("transition", "cut") for s in shots]
+    else:
+        n_clips = max(1, math.ceil(target_duration / clip_dur))
+        scenes = _split_scene_into_shots(video_prompt, n_clips)
+        shot_durations_list = [clip_dur] * len(scenes)
+        shot_transitions = None
+
     is_t2v = model in _T2V_VIDEO_MODELS
     is_ref = "ref" in model
 
-    # Native Kling audio when no voiceover is planned (Point 5)
     use_native_audio = not bool(voiceover_text and voiceover_text.strip())
 
     # ── Multi-frame path (kling, kling_v3_std, kling_t2v) ────────────────────
     if model in _KLING_MF_KEYS:
-        _SHOTS_PER_BATCH = 3  # 3 × 5s = 15s per guidances call
+        _SHOTS_PER_BATCH = 3
         batches = [scenes[i:i + _SHOTS_PER_BATCH] for i in range(0, len(scenes), _SHOTS_PER_BATCH)]
+        batch_dur_lists = [
+            shot_durations_list[i:i + _SHOTS_PER_BATCH]
+            for i in range(0, len(shot_durations_list), _SHOTS_PER_BATCH)
+        ]
         n_batches = len(batches)
 
-        # Upload reference image once (only for I2V models)
+        batch_transitions: list[str] | None = None
+        if shot_transitions and n_batches > 1:
+            batch_transitions = []
+            for bi, batch in enumerate(batches[:-1]):
+                last_idx = bi * _SHOTS_PER_BATCH + len(batch) - 1
+                t = shot_transitions[last_idx] if last_idx < len(shot_transitions) else "cut"
+                batch_transitions.append(t)
+
         ref_url = ""
         if not is_t2v and valid_paths:
             ref_url = await kling.upload_photo(valid_paths[0])
 
         await notify(
             f"⏱ Generating <b>{label}</b> multi-frame"
-            f" ({len(scenes)} shots → {n_batches} batch(es) × 15s"
+            f" ({len(scenes)} shots → {n_batches} batch(es)"
             + (f", ref photo" if ref_url else "")
             + (f", native audio" if use_native_audio else "")
             + ") — ~2-4 min per batch…"
         )
 
         clips = []
-        current_ref_url = ref_url  # updated after each batch for visual continuity
+        current_ref_url = ref_url
 
-        for i, batch in enumerate(batches):
+        for i, (batch, b_durs) in enumerate(zip(batches, batch_dur_lists)):
             await notify(f"🎞 {label} batch {i + 1}/{n_batches} ({len(batch)} shots)…")
             clip = await kling.generate_multiframe_clip(
                 scene_prompts=batch,
                 shot_duration=clip_dur,
+                shot_durations=b_durs,
                 image_reference_url=current_ref_url,
                 motion_has_audio=use_native_audio,
                 face_consistency=bool(current_ref_url),
@@ -449,7 +502,6 @@ async def _generate_kling(
             )
             clips.append(clip)
 
-            # Use last frame of this batch as the start anchor for the next
             if i < n_batches - 1:
                 frame_path = await gemini.extract_last_frame(clip)
                 if frame_path:
@@ -459,56 +511,108 @@ async def _generate_kling(
                     except OSError:
                         pass
 
-    # ── Regular Kling I2V / T2V / Reference path (O3, Ref, etc.) ────────────
+        raw_video = (
+            await gemini.concat_videos(clips, crossfade=0.5, transitions=batch_transitions)
+            if len(clips) > 1 else clips[0]
+        )
+
+    # ── Regular Kling I2V / Reference path (O3, Ref, etc.) ──────────────────
     elif not is_t2v and valid_paths:
+        uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
         await notify(
-            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
             + (f", {len(valid_paths)} ref photo(s)" if valid_paths else "")
             + ") — each clip takes ~2-4 min…"
         )
-        uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
 
-        if is_ref:
-            anchor_urls = [uploaded_urls[0]] * len(scenes)
-            clips = await kling.generate_clips(
-                scene_prompts=scenes,
-                anchor_photo_urls=anchor_urls,
-                clip_duration=clip_dur,
-                negative_prompt=negative_prompt,
-                model_id=atlas_model_id,
-                all_reference_urls=uploaded_urls,
-            )
+        if shots:
+            clips = []
+            current_img_url = uploaded_urls[0]
+            for i, (scene, dur) in enumerate(zip(scenes, shot_durations_list)):
+                if is_ref:
+                    effective = (
+                        "Seamlessly continuing from previous scene — "
+                        "same lighting, same background, same camera angle, smooth action flow. "
+                        + scene if i > 0 else scene
+                    )
+                    clip = await kling.generate_clip(
+                        prompt=effective,
+                        image_urls=uploaded_urls,
+                        duration=dur,
+                        model_id=atlas_model_id,
+                    )
+                else:
+                    clip = await kling.generate_clip(
+                        prompt=scene,
+                        image_url=current_img_url,
+                        duration=dur,
+                        negative_prompt=negative_prompt,
+                        model_id=atlas_model_id,
+                    )
+                    if i < len(scenes) - 1:
+                        frame_path = await gemini.extract_last_frame(clip)
+                        if frame_path:
+                            current_img_url = await kling.upload_photo(frame_path)
+                            try:
+                                os.remove(frame_path)
+                            except OSError:
+                                pass
+                clips.append(clip)
         else:
-            n = len(uploaded_urls)
-            anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
-            clips = await kling.generate_clips(
-                scene_prompts=scenes,
-                anchor_photo_urls=anchor_urls,
-                clip_duration=clip_dur,
-                negative_prompt=negative_prompt,
-                model_id=atlas_model_id,
-            )
+            if is_ref:
+                anchor_urls = [uploaded_urls[0]] * len(scenes)
+                clips = await kling.generate_clips(
+                    scene_prompts=scenes,
+                    anchor_photo_urls=anchor_urls,
+                    clip_duration=clip_dur,
+                    negative_prompt=negative_prompt,
+                    model_id=atlas_model_id,
+                    all_reference_urls=uploaded_urls,
+                )
+            else:
+                n = len(uploaded_urls)
+                anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
+                clips = await kling.generate_clips(
+                    scene_prompts=scenes,
+                    anchor_photo_urls=anchor_urls,
+                    clip_duration=clip_dur,
+                    negative_prompt=negative_prompt,
+                    model_id=atlas_model_id,
+                )
+
+        concat_transitions = shot_transitions[:-1] if shot_transitions else None
+        raw_video = (
+            await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
+            if len(clips) > 1 else clips[0]
+        )
+
+    # ── T2V path ─────────────────────────────────────────────────────────────
     else:
         await notify(
-            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s) × {clip_dur}s"
-            + ") — each clip takes ~2-4 min…"
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)) — each clip takes ~2-4 min…"
         )
         clips = []
-        for i, prompt in enumerate(scenes):
+        for i, (scene, dur) in enumerate(zip(scenes, shot_durations_list)):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
             effective = (
                 "Seamlessly continuing from previous scene — "
-                "same characters, same lighting, smooth flow. " + prompt
-                if i > 0 else prompt
+                "same characters, same lighting, smooth flow. " + scene
+                if i > 0 else scene
             )
             clip = await kling.generate_clip(
-                prompt=effective, duration=clip_dur,
+                prompt=effective,
+                duration=dur,
                 negative_prompt=negative_prompt,
                 model_id=atlas_model_id,
             )
             clips.append(clip)
 
-    raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
+        concat_transitions = shot_transitions[:-1] if shot_transitions else None
+        raw_video = (
+            await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
+            if len(clips) > 1 else clips[0]
+        )
+
     await notify(f"✅ {label} clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -530,6 +634,7 @@ async def _generate_happyhorse(
     voiceover_text: str,
     image_paths: list[str] | None,
     notify,
+    shots: list[dict] | None = None,
 ) -> dict:
     """Happy Horse generates one video (≤15s) with built-in Foley audio.
 
@@ -538,7 +643,10 @@ async def _generate_happyhorse(
     Only the first image is used (single-clip model).
     """
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    clip_duration = max(3, min(15, target_duration))
+    if shots and shots[0].get("duration_seconds"):
+        clip_duration = max(3, min(15, shots[0]["duration_seconds"]))
+    else:
+        clip_duration = max(3, min(15, target_duration))
     resolution = settings.get("video_resolution", "720p")
 
     valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
@@ -557,7 +665,10 @@ async def _generate_happyhorse(
     anchor_url = await horse.upload_photo(valid_paths[0])
 
     # Use the scene description (without voiceover) as the animation prompt.
-    scene_only = _strip_voiceover(video_prompt)
+    if shots and shots[0].get("scene_prompt"):
+        scene_only = shots[0]["scene_prompt"]
+    else:
+        scene_only = _strip_voiceover(video_prompt)
     raw_video = await horse.generate_clip(
         prompt=scene_only or video_prompt,
         image_url=anchor_url,
@@ -585,14 +696,23 @@ async def _generate_pixverse(
     voiceover_text: str,
     image_paths: list[str] | None,
     notify,
+    shots: list[dict] | None = None,
 ) -> dict:
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    n_clips = max(1, math.ceil(target_duration / 5))
 
-    scenes = _split_scene_into_shots(video_prompt, n_clips)
+    if shots:
+        scenes = [s.get("scene_prompt", "") for s in shots]
+        durations = [max(3, min(8, s.get("duration_seconds", 5))) for s in shots]
+        transitions = [s.get("transition", "cut") for s in shots]
+    else:
+        n_clips = max(1, math.ceil(target_duration / 5))
+        scenes = _split_scene_into_shots(video_prompt, n_clips)
+        durations = [5] * len(scenes)
+        transitions = None
+
     valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
     await notify(
-        f"⏱ Generating <b>PixVerse V4.5</b> ({len(scenes)} clip(s) × 5s) — "
+        f"⏱ Generating <b>PixVerse V4.5</b> ({len(scenes)} clip(s)) — "
         "each clip takes ~1-3 min…"
     )
 
@@ -600,22 +720,37 @@ async def _generate_pixverse(
 
     if valid_paths:
         uploaded_urls = list(await asyncio.gather(*[pixverse.upload_photo(p) for p in valid_paths]))
-        # I2V: cycle images across clips
         n = len(uploaded_urls)
-        anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
-        clips = await pixverse.generate_clips(
-            scene_prompts=scenes,
-            anchor_photo_urls=anchor_urls,
-            clip_duration=5,
-        )
+
+        if shots:
+            clips = []
+            for i, (scene, dur) in enumerate(zip(scenes, durations)):
+                await notify(f"🎞 PixVerse clip {i + 1}/{len(scenes)}…")
+                clip = await pixverse.generate_clip(
+                    prompt=scene,
+                    image_url=uploaded_urls[i % n],
+                    duration=dur,
+                )
+                clips.append(clip)
+        else:
+            anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
+            clips = await pixverse.generate_clips(
+                scene_prompts=scenes,
+                anchor_photo_urls=anchor_urls,
+                clip_duration=5,
+            )
     else:
         clips = []
-        for i, prompt in enumerate(scenes):
+        for i, (scene, dur) in enumerate(zip(scenes, durations)):
             await notify(f"🎞 PixVerse clip {i + 1}/{len(scenes)}…")
-            clip = await pixverse.generate_clip(prompt=prompt, duration=5)
+            clip = await pixverse.generate_clip(prompt=scene, duration=dur)
             clips.append(clip)
 
-    raw_video = await gemini.concat_videos(clips, crossfade=0.5) if len(clips) > 1 else clips[0]
+    concat_transitions = transitions[:-1] if transitions else None
+    raw_video = (
+        await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
+        if len(clips) > 1 else clips[0]
+    )
     await notify("✅ PixVerse clips ready")
 
     tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
@@ -733,11 +868,83 @@ def _clip_duration_for_model(video_model: str) -> int:
 
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
+    """Generate video script as structured JSON. Falls back to text format on parse failure."""
     base_sys = settings.get("system_video_prompt") or ""
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
     clip_duration = _clip_duration_for_model(video_model)
-    # Single-clip models: generate one continuous scene, not multiple shots
+    _SINGLE_CLIP_MODELS = {"happy_horse", "kling_omni", "seedance_audio_ref"}
+    is_single_clip = video_model in _SINGLE_CLIP_MODELS
+
+    n_clips = 1 if is_single_clip else max(1, math.ceil(target_duration / clip_duration))
+    actual_duration = n_clips * clip_duration
+    target_words = max(20, int(actual_duration * 2.5))
+
+    # Per-model duration constraints
+    if video_model.startswith("seedance"):
+        min_dur, max_dur = 4, 12
+    elif video_model == "pixverse":
+        min_dur, max_dur = 3, 8
+    elif "kling" in video_model:
+        min_dur, max_dur = 3, 10
+    else:
+        min_dur, max_dur = 4, clip_duration
+
+    shot_mode_str = "single" if is_single_clip else "multi"
+    if is_single_clip:
+        shots_count_rule = "shots array has EXACTLY 1 element"
+        transition_rule  = "the 1 shot must use transition 'fade'"
+    else:
+        shots_count_rule = f"shots array has EXACTLY {n_clips} elements"
+        transition_rule  = "'cut' for action/pace/energy, 'dissolve' for mood shift/scene change, 'fade' for the FINAL shot ONLY"
+
+    _JSON_SYS = (
+        "Output ONLY valid JSON. No prose. No markdown fences. Schema:\n"
+        "{\n"
+        f'  "spoken_text": "full voiceover ~{target_words} words (~{actual_duration}s at 2.5 words/sec)",\n'
+        f'  "caption": "social-media caption with 3-5 hashtags (max 150 chars)",\n'
+        f'  "shot_mode": "{shot_mode_str}",\n'
+        '  "shots": [\n'
+        '    {\n'
+        '      "index": 0,\n'
+        f'      "duration_seconds": {clip_duration},\n'
+        '      "scene_prompt": "camera angle + subject action + lighting (English ONLY, visuals ONLY)",\n'
+        '      "transition": "cut | dissolve | fade"\n'
+        '    }\n'
+        '  ]\n'
+        '}\n'
+        "Rules:\n"
+        f"- {shots_count_rule}\n"
+        f"- duration_seconds = ceil(word_count_for_this_shot / 2.5), min {min_dur}s max {max_dur}s\n"
+        "- scene_prompt: English ONLY, describe VISUALS only — never include spoken text\n"
+        "- spoken_text: MUST be in the same language as the user input\n"
+        "- caption: same language as spoken_text\n"
+        f"- transition: {transition_rule}\n"
+        "- scene_prompt must depict EXACTLY the topic from the input\n"
+        "- G-rated, child-safe content only\n"
+        f"- Total: {n_clips} shot(s), ~{actual_duration}s\n"
+    )
+
+    sys_prompt = (base_sys + "\n\n" + _JSON_SYS) if base_sys else _JSON_SYS
+    raw = await gemini.generate_text(
+        enhance_prompt,
+        sys_prompt,
+        settings.get("text_model") or "",
+    )
+
+    if GeminiService.parse_script_json(raw) is not None:
+        return raw  # valid JSON ✓
+
+    logger.warning("Gemini returned invalid JSON for video script — falling back to text format")
+    return await _build_video_prompt_text(enhance_prompt, settings, gemini)
+
+
+async def _build_video_prompt_text(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
+    """Text-format fallback (original implementation)."""
+    base_sys = settings.get("system_video_prompt") or ""
+    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    video_model = (settings.get("video_model") or "seedance").lower()
+    clip_duration = _clip_duration_for_model(video_model)
     _SINGLE_CLIP_MODELS = {"happy_horse", "kling_omni", "seedance_audio_ref"}
     is_single_clip = video_model in _SINGLE_CLIP_MODELS
 
@@ -756,8 +963,7 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
     else:
         scene_instruction = (
             f"Scene: Describe EXACTLY {n_clips} camera shot(s) separated by 'Cut to:'. "
-            f"Each shot covers ~{clip_duration} seconds of the story and must show what is happening "
-            f"at that moment in the narration. "
+            f"Each shot covers ~{clip_duration} seconds of the story. "
             f"Format each shot as: shot size + character action + camera movement.\n"
             f"Shot sizes: wide shot, medium shot, close-up, extreme close-up, overhead shot, low angle shot.\n"
             f"Camera moves: slow push in, dolly back, rack focus, pan left/right, crane up, handheld, static.\n"
@@ -837,6 +1043,27 @@ def _extract_first_scene(video_prompt: str, gemini) -> str:
 
 
 def _split_video_prompt(video_prompt: str, gemini) -> tuple[str, str]:
+    # JSON format from Gemini structured output
+    parsed = GeminiService.parse_script_json(video_prompt)
+    if parsed is not None:
+        voiceover = parsed.get("spoken_text", "")
+        shots = parsed.get("shots", [])
+        if shots:
+            parts = []
+            for i, shot in enumerate(shots):
+                dur = shot.get("duration_seconds", "?")
+                trans = shot.get("transition", "cut")
+                prompt = shot.get("scene_prompt", "")
+                if len(shots) == 1:
+                    parts.append(f"Shot 1 ({dur}s): {prompt}")
+                else:
+                    parts.append(f"[Shot {i + 1}, {dur}s, {trans}] {prompt}")
+            scene = "\n".join(parts)
+        else:
+            scene = ""
+        return scene, voiceover
+
+    # Text format fallback
     voiceover = gemini.extract_voiceover(video_prompt) or ""
     if not voiceover:
         return video_prompt.strip(), ""

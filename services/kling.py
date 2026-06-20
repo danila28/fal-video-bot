@@ -218,6 +218,7 @@ class KlingService:
         self,
         scene_prompts: list[str],
         shot_duration: int = 5,
+        shot_durations: list[int] | None = None,
         image_reference_url: str = "",
         motion_has_audio: bool = False,
         face_consistency: bool = True,
@@ -226,14 +227,20 @@ class KlingService:
         """Generate one clip via the guidances (multi-frame) API.
 
         scene_prompts: up to 6 shot descriptions (max 6 × 5s = 15s per call).
+        shot_durations: per-shot durations; falls back to shot_duration if absent.
         image_reference_url: single character anchor image for I2V; omit for T2V.
         motion_has_audio: let Kling generate its own background audio.
         face_consistency: stabilise facial features across shots.
         """
         os.makedirs(self.static_dir, exist_ok=True)
+        effective_durs = (
+            shot_durations
+            if shot_durations and len(shot_durations) == len(scene_prompts)
+            else [shot_duration] * len(scene_prompts)
+        )
         params: dict = {
             "guidances": [
-                {"index": i, "prompt": p, "duration": shot_duration}
+                {"index": i, "prompt": p, "duration": effective_durs[i]}
                 for i, p in enumerate(scene_prompts)
             ],
             "motion_has_audio": motion_has_audio,
