@@ -31,7 +31,7 @@ _O3_PRO_I2V   = "kwaivgi/kling-video-o3-pro/image-to-video"
 _O3_STD_I2V   = "kwaivgi/kling-video-o3-std/image-to-video"
 _O3_PRO_REF   = "kwaivgi/kling-video-o3-pro/reference-to-video"
 _O3_STD_REF   = "kwaivgi/kling-video-o3-std/reference-to-video"
-_V3_OMNI_I2V  = "kwaivgi/kling-v3.0-omni/image-to-video"
+_V3_OMNI_I2V  = "kwaivgi/kling-video-o3-4k/image-to-video"
 # Multi-frame guidances endpoint (up to 6 shots × 5s = 15s per call)
 _V3_MULTI     = "kling-v3"
 

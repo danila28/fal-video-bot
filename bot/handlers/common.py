@@ -403,7 +403,7 @@ async def _generate_kling(
             raise ValueError("Kling Omni requires a reference photo.")
 
         audio_dur = await asyncio.to_thread(GeminiService._probe_duration, tts_audio_path)
-        clip_dur_sec = max(3, min(30, int(math.ceil(audio_dur))))
+        clip_dur_sec = max(3, min(15, int(math.ceil(audio_dur))))
 
         await notify(
             f"⏱ Generating <b>{label}</b> ({clip_dur_sec}s, native lip-sync) — takes ~3-5 min…"
@@ -864,7 +864,7 @@ def _clip_duration_for_model(video_model: str) -> int:
     from services.kling import MULTIFRAME_SETTINGS_KEYS as _MF
     if video_model in _MF:
         return 5   # per-shot duration; 3 shots = 15s per guidances call
-    return 10      # O3/Omni/Ref — standard I2V, max 10s
+    return 15      # Omni (O3 4K) — lip-sync I2V, max 15s
 
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
