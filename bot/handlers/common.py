@@ -242,6 +242,7 @@ async def _generate_seedance(
     model = (settings.get("video_model") or "seedance").lower()
     atlas_model_id = _SEEDANCE_IDS.get(model, _SEEDANCE_IDS["seedance"])
     label = _SEEDANCE_LABELS.get(model, "Seedance 2.0")
+    resolution = settings.get("video_resolution", "720p")
 
     seedance = container.inject(SeedanceService)
     valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
@@ -277,6 +278,7 @@ async def _generate_seedance(
             image_urls=img_urls,
             audio_ref_url=audio_url,
             duration=10,
+            resolution=resolution,
             model_id=atlas_model_id,
         )
         await notify(f"✅ {label} clip ready")
@@ -295,7 +297,7 @@ async def _generate_seedance(
 
     if shots:
         scenes = [_build_shot_prompt(s) for s in shots]
-        durations = [int(max(4, min(12, s.get("duration_seconds", clip_dur)))) for s in shots]
+        durations = [int(max(4, min(15, s.get("duration_seconds", clip_dur)))) for s in shots]
         transitions = [s.get("transition", "cut") for s in shots]
     else:
         n_clips = max(1, math.ceil(target_duration / clip_dur))
@@ -310,6 +312,7 @@ async def _generate_seedance(
         uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
 
         if is_ref:
+            # Reference: individual clips, reference image provides consistency (no last-frame stitching)
             await notify(
                 f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
                 + f", {len(valid_paths)} ref photo(s)) — each clip takes ~3-5 min…"
@@ -325,22 +328,24 @@ async def _generate_seedance(
                     prompt=effective,
                     image_urls=uploaded_urls,
                     duration=dur,
+                    resolution=resolution,
                     model_id=atlas_model_id,
                 )
                 clips.append(clip)
             concat_transitions = transitions[:-1] if transitions else None
             raw_video = await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions) if len(clips) > 1 else clips[0]
         else:
-            # I2V: single multi-scene API call with [Scene1]...[SceneN] markers
+            # I2V: one API call, model renders all scenes continuously (no FFmpeg concat needed)
             await notify(
                 f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s)"
-                + (", single call" if len(scenes) > 1 else "")
-                + ") — takes ~3-5 min…"
+                + f", {clip_dur * len(scenes)}s total) — takes ~3-5 min…"
             )
             raw_video = await seedance.generate_multi_scene_clip(
                 scene_prompts=scenes,
                 image_url=uploaded_urls[0],
-                durations=durations,
+                clip_duration=clip_dur,
+                resolution=resolution,
+                model_id=atlas_model_id,
             )
     else:
         await notify(
@@ -354,7 +359,7 @@ async def _generate_seedance(
                 "same characters, same lighting, smooth flow. " + scene
                 if i > 0 else scene
             )
-            clip = await seedance.generate_clip(prompt=effective, duration=dur, model_id=atlas_model_id)
+            clip = await seedance.generate_clip(prompt=effective, duration=dur, resolution=resolution, model_id=atlas_model_id)
             clips.append(clip)
         concat_transitions = transitions[:-1] if transitions else None
         raw_video = await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions) if len(clips) > 1 else clips[0]
@@ -724,14 +729,23 @@ async def _generate_pixverse(
 
         if shots:
             clips = []
+            current_img_url = uploaded_urls[0]
             for i, (scene, dur) in enumerate(zip(scenes, durations)):
                 await notify(f"🎞 PixVerse clip {i + 1}/{len(scenes)}…")
                 clip = await pixverse.generate_clip(
                     prompt=scene,
-                    image_url=uploaded_urls[i % n],
+                    image_url=current_img_url,
                     duration=dur,
                 )
                 clips.append(clip)
+                if i < len(scenes) - 1:
+                    frame_path = await gemini.extract_last_frame(clip)
+                    if frame_path:
+                        current_img_url = await pixverse.upload_photo(frame_path)
+                        try:
+                            os.remove(frame_path)
+                        except OSError:
+                            pass
         else:
             anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
             clips = await pixverse.generate_clips(
@@ -860,7 +874,7 @@ def _clip_duration_for_model(video_model: str) -> int:
     if video_model == "happy_horse":
         return 15
     if video_model.startswith("seedance"):
-        return 10
+        return 15
     from services.kling import MULTIFRAME_SETTINGS_KEYS as _MF
     if video_model in _MF:
         return 5   # per-shot duration; 3 shots = 15s per guidances call
@@ -882,7 +896,7 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
 
     # Per-model duration constraints
     if video_model.startswith("seedance"):
-        min_dur, max_dur = 4, 12
+        min_dur, max_dur = 4, 15
     elif video_model == "pixverse":
         min_dur, max_dur = 3, 8
     elif "kling" in video_model:

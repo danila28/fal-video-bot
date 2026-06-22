@@ -71,10 +71,11 @@ class ImageGenService:
         client = self._require_gemini()
         os.makedirs(self.static_dir, exist_ok=True)
 
-        contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
+        contents = [types.Content(role="user", parts=[types.Part(
+            text=f"{prompt}. Generate as a vertical 9:16 portrait format image."
+        )])]
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio="9:16", output_mime_type="image/png"),
         )
 
         response = await asyncio.to_thread(
@@ -84,8 +85,9 @@ class ImageGenService:
             config=config,
         )
 
-        if getattr(response, "prompt_feedback", None) is not None:
-            raise RuntimeError(f"Gemini image blocked: {response.prompt_feedback}")
+        pf = getattr(response, "prompt_feedback", None)
+        if pf and getattr(pf, "block_reason", None):
+            raise RuntimeError(f"Gemini image blocked: {pf.block_reason}")
 
         for cand in getattr(response, "candidates", []) or []:
             for part in getattr(getattr(cand, "content", None), "parts", []) or []:

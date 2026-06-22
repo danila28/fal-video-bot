@@ -10,7 +10,7 @@ Reference-to-Video models use `image_urls` (array) instead of `image_url`,
 and the prompt must reference the image with `@Image1`. Last-frame continuity
 is skipped for them (reference defines character identity, not starting frame).
 
-Clip duration: 10 s (standard unit for all Seedance variants).
+Clip duration: 15 s (standard unit for all Seedance variants).
 """
 
 import asyncio
@@ -164,27 +164,28 @@ class SeedanceService:
         self,
         scene_prompts: list[str],
         image_url: str = "",
-        durations: list[int] | None = None,
+        clip_duration: int = 15,
+        model_id: str = "",
         aspect_ratio: str = "9:16",
         resolution: str = "720p",
     ) -> str:
-        """Single Atlas API call with [Scene1]...[SceneN] markers + durations array.
+        """Single Atlas API call with [Scene1]...[SceneN] markers.
 
         All scenes are rendered by the model in one shot, preserving visual
         continuity without the need for last-frame stitching.
+        Total duration = clip_duration * len(scene_prompts).
         """
         os.makedirs(self.static_dir, exist_ok=True)
-        if durations is None:
-            durations = [10] * len(scene_prompts)
 
         combined_prompt = " ".join(
             f"[Scene{i + 1}] {p}" for i, p in enumerate(scene_prompts)
         )
+        total_duration = clip_duration * len(scene_prompts)
 
-        model = _I2V if image_url else _T2V
+        atlas_model = model_id or (_I2V if image_url else _T2V)
         params: dict = {
             "prompt": combined_prompt,
-            "durations": durations,
+            "duration": total_duration,
             "ratio": aspect_ratio,
             "resolution": resolution,
             "generate_audio": False,
@@ -194,10 +195,10 @@ class SeedanceService:
             params["image_url"] = image_url
 
         logger.info(
-            f"Seedance multi-scene | model={model} | scenes={len(scene_prompts)}"
-            f" | durations={durations}"
+            f"Seedance multi-scene | model={atlas_model} | scenes={len(scene_prompts)}"
+            f" | total_duration={total_duration}s"
         )
-        video_url = await self._atlas.generate_video(model, params)
+        video_url = await self._atlas.generate_video(atlas_model, params)
         return await self._atlas.download(video_url, ext="mp4")
 
     async def generate_clips(
