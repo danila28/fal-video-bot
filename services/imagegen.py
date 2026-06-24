@@ -192,24 +192,17 @@ class ImageGenService:
         video_model: str = "seedance",
         notify=None,
     ) -> str:
-        """Generate one image. Falls back to FLUX 2 Pro on any error."""
+        """Generate one image. Raises on failure — no automatic fallback."""
         aspect_ratio = self._aspect_for_video_model(video_model)
         logger.info(f"Image generation | model={model} | aspect={aspect_ratio} | prompt={prompt[:80]}…")
 
-        try:
-            if model in _GEMINI_IMAGE_MODELS:
-                return await self._generate_via_gemini(prompt, model)
-            if model in _IMAGEN_MODELS:
-                return await self._generate_via_imagen(prompt, model)
-            if model == _FLUX_KONTEXT_MODEL:
-                return await self._generate_via_kontext(prompt, aspect_ratio)
-            if model == _IDEOGRAM_MODEL:
-                return await self._generate_via_ideogram(prompt, aspect_ratio)
-            return await self._generate_via_flux(prompt, aspect_ratio)
-        except Exception as e:
-            if model != _FLUX_MODEL:
-                logger.warning(f"Image model {model} failed ({e}); falling back to FLUX 2 Pro…")
-                if notify is not None:
-                    await notify("⚠️ Image model unavailable, switched to FLUX 2 Pro automatically.")
-                return await self._generate_via_flux(prompt, aspect_ratio)
-            raise
+        if model in _GEMINI_IMAGE_MODELS:
+            return await self._generate_via_gemini(prompt, model)
+        if model in _IMAGEN_MODELS:
+            return await self._generate_via_imagen(prompt, model)
+        # if model == _FLUX_KONTEXT_MODEL:
+        #     return await self._generate_via_kontext(prompt, aspect_ratio)
+        # if model == _IDEOGRAM_MODEL:
+        #     return await self._generate_via_ideogram(prompt, aspect_ratio)
+        # return await self._generate_via_flux(prompt, aspect_ratio)
+        raise ValueError(f"Image model '{model}' not recognized. Select a Google model in ⚙️ Settings → 🖼 Image model.")
