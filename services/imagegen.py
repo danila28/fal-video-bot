@@ -39,9 +39,15 @@ _IMAGEN_MODELS = {"imagen-3.0-generate-001"}
 class ImageGenService:
     def __init__(self, api_key: str = "", atlas_api_key: str = "", static_dir: str = ""):
         self._atlas = AtlasClient(atlas_api_key, static_dir) if atlas_api_key else None
-        # Vertex AI client — same pattern as video-gen-bot's VertexService.client.
-        # Routes Gemini image models and Imagen 3 through the Vertex AI endpoint.
-        self._vertex = genai.Client(api_key=api_key, vertexai=True) if api_key else None
+        # Standard Gemini Developer API client — routes to generativelanguage.googleapis.com.
+        # Vertex AI (aiplatform.googleapis.com) requires OAuth2/service-account credentials
+        # and does NOT accept API keys, so vertexai=True is intentionally omitted here.
+        self._gemini = genai.Client(api_key=api_key) if api_key else None
+        # Imagen 3 requires the v1 API endpoint (not v1beta).
+        self._gemini_v1 = (
+            genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1"))
+            if api_key else None
+        )
         if not static_dir:
             static_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
@@ -58,16 +64,16 @@ class ImageGenService:
             raise RuntimeError("ATLAS_API_KEY is required for Atlas image generation")
         return self._atlas
 
-    def _require_vertex(self) -> genai.Client:
-        if self._vertex is None:
+    def _require_gemini(self) -> genai.Client:
+        if self._gemini is None:
             raise RuntimeError("GEMINI_API_KEY / VERTEX_API_KEY is required for Google image generation")
-        return self._vertex
+        return self._gemini
 
     # ── Google / Vertex backends ──────────────────────────────────────────
 
     async def _generate_via_gemini(self, prompt: str, model: str) -> str:
-        """Gemini image generation via generate_content + IMAGE modality (Vertex AI)."""
-        client = self._require_vertex()
+        """Gemini image generation via generate_content + IMAGE modality."""
+        client = self._require_gemini()
         os.makedirs(self.static_dir, exist_ok=True)
 
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
@@ -100,8 +106,10 @@ class ImageGenService:
         raise RuntimeError(f"Gemini model {model} returned no image data")
 
     async def _generate_via_imagen(self, prompt: str, model: str) -> str:
-        """Imagen 3 via generate_images() (Vertex AI)."""
-        client = self._require_vertex()
+        """Imagen 3 via generate_images() — uses v1 API (Gemini Developer API)."""
+        if self._gemini_v1 is None:
+            raise RuntimeError("GEMINI_API_KEY / VERTEX_API_KEY is required for Imagen generation")
+        client = self._gemini_v1
         os.makedirs(self.static_dir, exist_ok=True)
 
         config = types.GenerateImagesConfig(
