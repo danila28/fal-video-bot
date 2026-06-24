@@ -2,17 +2,16 @@
 
 Backends chosen via `model` parameter:
 
-  Google Gemini API (standard API key, no Vertex AI):
+  Vertex AI (api_key + vertexai=True — same key as VERTEX_API_KEY / GEMINI_API_KEY):
   • gemini-2.0-flash-preview-image-generation  — fast, affordable
   • imagen-3.0-generate-001                    — Imagen 3, highest quality
 
-  Atlas Cloud:
+  Atlas Cloud (atlas_api_key):
   • black-forest-labs/flux-2-pro/text-to-image       — FLUX 2 Pro (universal)
   • black-forest-labs/flux-kontext-pro-text-to-image — FLUX Kontext (character consistency)
   • ideogram/ideogram-v3/text-to-image               — Ideogram V3 (stylised art)
 
 All models produce 9:16 vertical output.
-On failure, automatically falls back to FLUX 2 Pro (Atlas).
 """
 
 import asyncio
@@ -31,27 +30,18 @@ _FLUX_MODEL         = "black-forest-labs/flux-2-pro/text-to-image"
 _FLUX_KONTEXT_MODEL = "black-forest-labs/flux-kontext-pro-text-to-image"
 _IDEOGRAM_MODEL     = "ideogram/ideogram-v3/text-to-image"
 
-# Gemini native image generation (generate_content + IMAGE modality, v1beta API)
+# Gemini image generation via generate_content + IMAGE modality
 _GEMINI_IMAGE_MODELS = {"gemini-2.0-flash-preview-image-generation"}
-# Imagen 3 via generate_images() — requires v1 API (not v1beta)
+# Imagen 3 via generate_images()
 _IMAGEN_MODELS = {"imagen-3.0-generate-001"}
 
 
 class ImageGenService:
     def __init__(self, api_key: str = "", atlas_api_key: str = "", static_dir: str = ""):
         self._atlas = AtlasClient(atlas_api_key, static_dir) if atlas_api_key else None
-        self._api_key = api_key
-        # Standard Gemini API client (API key only, no vertexai=True) — v1beta default
-        self._gemini = genai.Client(api_key=api_key) if api_key else None
-        # Imagen 3 requires v1 API — create the client once and reuse
-        self._gemini_v1 = (
-            genai.Client(
-                api_key=api_key,
-                http_options=types.HttpOptions(api_version="v1"),
-            )
-            if api_key
-            else None
-        )
+        # Vertex AI client — same pattern as video-gen-bot's VertexService.client.
+        # Routes Gemini image models and Imagen 3 through the Vertex AI endpoint.
+        self._vertex = genai.Client(api_key=api_key, vertexai=True) if api_key else None
         if not static_dir:
             static_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
@@ -65,28 +55,25 @@ class ImageGenService:
 
     def _require_atlas(self) -> AtlasClient:
         if self._atlas is None:
-            raise RuntimeError("ATLAS_API_KEY is required for image generation")
+            raise RuntimeError("ATLAS_API_KEY is required for Atlas image generation")
         return self._atlas
 
-    def _require_gemini(self) -> genai.Client:
-        if self._gemini is None:
-            raise RuntimeError("GEMINI_API_KEY is required for Google image generation")
-        return self._gemini
+    def _require_vertex(self) -> genai.Client:
+        if self._vertex is None:
+            raise RuntimeError("GEMINI_API_KEY / VERTEX_API_KEY is required for Google image generation")
+        return self._vertex
 
-    # ── Google backends ───────────────────────────────────────────────────
+    # ── Google / Vertex backends ──────────────────────────────────────────
 
     async def _generate_via_gemini(self, prompt: str, model: str) -> str:
-        """Gemini native image generation via generate_content + IMAGE modality."""
-        client = self._require_gemini()
+        """Gemini image generation via generate_content + IMAGE modality (Vertex AI)."""
+        client = self._require_vertex()
         os.makedirs(self.static_dir, exist_ok=True)
 
         contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(
-                aspect_ratio="9:16",
-                output_mime_type="image/png",
-            ),
+            image_config=types.ImageConfig(aspect_ratio="9:16"),
         )
 
         response = await asyncio.to_thread(
@@ -113,9 +100,8 @@ class ImageGenService:
         raise RuntimeError(f"Gemini model {model} returned no image data")
 
     async def _generate_via_imagen(self, prompt: str, model: str) -> str:
-        """Imagen 3 via generate_images() — uses v1 API (not v1beta)."""
-        if self._gemini_v1 is None:
-            raise RuntimeError("GEMINI_API_KEY is required for Imagen generation")
+        """Imagen 3 via generate_images() (Vertex AI)."""
+        client = self._require_vertex()
         os.makedirs(self.static_dir, exist_ok=True)
 
         config = types.GenerateImagesConfig(
@@ -124,7 +110,7 @@ class ImageGenService:
             output_mime_type="image/png",
         )
         response = await asyncio.to_thread(
-            self._gemini_v1.models.generate_images,
+            client.models.generate_images,
             model=model,
             prompt=prompt,
             config=config,
@@ -204,7 +190,7 @@ class ImageGenService:
         video_model: str = "seedance",
         notify=None,
     ) -> str:
-        """Generate one image. Raises on failure — no automatic fallback."""
+        """Generate one image. Raises on failure."""
         model = model or self._DEFAULT_MODEL
         aspect_ratio = self._aspect_for_video_model(video_model)
         logger.info(f"Image generation | model={model} | aspect={aspect_ratio} | prompt={prompt[:80]}…")
@@ -213,4 +199,10 @@ class ImageGenService:
             return await self._generate_via_gemini(prompt, model)
         if model in _IMAGEN_MODELS:
             return await self._generate_via_imagen(prompt, model)
+        if model == _FLUX_MODEL:
+            return await self._generate_via_flux(prompt, aspect_ratio)
+        if model == _FLUX_KONTEXT_MODEL:
+            return await self._generate_via_kontext(prompt, aspect_ratio)
+        if model == _IDEOGRAM_MODEL:
+            return await self._generate_via_ideogram(prompt, aspect_ratio)
         raise ValueError(f"Unknown image model '{model}'. Go to ⚙️ Settings → 🖼 Image model and reselect.")
