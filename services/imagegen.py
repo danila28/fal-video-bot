@@ -31,18 +31,27 @@ _FLUX_MODEL         = "black-forest-labs/flux-2-pro/text-to-image"
 _FLUX_KONTEXT_MODEL = "black-forest-labs/flux-kontext-pro-text-to-image"
 _IDEOGRAM_MODEL     = "ideogram/ideogram-v3/text-to-image"
 
-# Gemini native image generation (generate_content + IMAGE modality)
+# Gemini native image generation (generate_content + IMAGE modality, v1beta API)
 _GEMINI_IMAGE_MODELS = {"gemini-2.0-flash-preview-image-generation"}
-# Imagen 3 — uses generate_images() API
-_IMAGEN_MODELS       = {"imagen-3.0-generate-001"}
-_GOOGLE_IMAGE_MODELS = _GEMINI_IMAGE_MODELS | _IMAGEN_MODELS
+# Imagen 3 via generate_images() — requires v1 API (not v1beta)
+_IMAGEN_MODELS = {"imagen-3.0-generate-001"}
 
 
 class ImageGenService:
     def __init__(self, api_key: str = "", atlas_api_key: str = "", static_dir: str = ""):
         self._atlas = AtlasClient(atlas_api_key, static_dir) if atlas_api_key else None
-        # Standard Gemini API client (API key only, no vertexai=True)
+        self._api_key = api_key
+        # Standard Gemini API client (API key only, no vertexai=True) — v1beta default
         self._gemini = genai.Client(api_key=api_key) if api_key else None
+        # Imagen 3 requires v1 API — create the client once and reuse
+        self._gemini_v1 = (
+            genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(api_version="v1"),
+            )
+            if api_key
+            else None
+        )
         if not static_dir:
             static_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
@@ -71,11 +80,13 @@ class ImageGenService:
         client = self._require_gemini()
         os.makedirs(self.static_dir, exist_ok=True)
 
-        contents = [types.Content(role="user", parts=[types.Part(
-            text=f"{prompt}. Generate as a vertical 9:16 portrait format image."
-        )])]
+        contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
+            image_config=types.ImageConfig(
+                aspect_ratio="9:16",
+                output_mime_type="image/png",
+            ),
         )
 
         response = await asyncio.to_thread(
@@ -102,8 +113,9 @@ class ImageGenService:
         raise RuntimeError(f"Gemini model {model} returned no image data")
 
     async def _generate_via_imagen(self, prompt: str, model: str) -> str:
-        """Imagen 3 via generate_images() API."""
-        client = self._require_gemini()
+        """Imagen 3 via generate_images() — uses v1 API (not v1beta)."""
+        if self._gemini_v1 is None:
+            raise RuntimeError("GEMINI_API_KEY is required for Imagen generation")
         os.makedirs(self.static_dir, exist_ok=True)
 
         config = types.GenerateImagesConfig(
@@ -111,14 +123,12 @@ class ImageGenService:
             aspect_ratio="9:16",
             output_mime_type="image/png",
         )
-
         response = await asyncio.to_thread(
-            client.models.generate_images,
+            self._gemini_v1.models.generate_images,
             model=model,
             prompt=prompt,
             config=config,
         )
-
         for img in getattr(response, "generated_images", []) or []:
             image_bytes = getattr(getattr(img, "image", None), "image_bytes", None)
             if image_bytes:
@@ -127,7 +137,6 @@ class ImageGenService:
                     f.write(image_bytes)
                 logger.info(f"Imagen image saved: {path}")
                 return path
-
         raise RuntimeError(f"Imagen model {model} returned no image data")
 
     # ── Atlas backends ────────────────────────────────────────────────────
@@ -172,27 +181,31 @@ class ImageGenService:
 
     # ── Public API ────────────────────────────────────────────────────────
 
+    _DEFAULT_MODEL = "gemini-2.0-flash-preview-image-generation"
+
     async def generate_many(
         self,
         prompt: str,
-        model: str = _FLUX_MODEL,
+        model: str = "",
         video_model: str = "seedance",
         count: int = 1,
         notify=None,
     ) -> list[str]:
         """Generate `count` images in parallel. Returns list of local file paths."""
         count = max(1, min(4, count))
+        model = model or self._DEFAULT_MODEL
         tasks = [self.generate(prompt, model, video_model, notify) for _ in range(count)]
         return list(await asyncio.gather(*tasks))
 
     async def generate(
         self,
         prompt: str,
-        model: str = _FLUX_MODEL,
+        model: str = "",
         video_model: str = "seedance",
         notify=None,
     ) -> str:
         """Generate one image. Raises on failure — no automatic fallback."""
+        model = model or self._DEFAULT_MODEL
         aspect_ratio = self._aspect_for_video_model(video_model)
         logger.info(f"Image generation | model={model} | aspect={aspect_ratio} | prompt={prompt[:80]}…")
 
@@ -200,9 +213,4 @@ class ImageGenService:
             return await self._generate_via_gemini(prompt, model)
         if model in _IMAGEN_MODELS:
             return await self._generate_via_imagen(prompt, model)
-        # if model == _FLUX_KONTEXT_MODEL:
-        #     return await self._generate_via_kontext(prompt, aspect_ratio)
-        # if model == _IDEOGRAM_MODEL:
-        #     return await self._generate_via_ideogram(prompt, aspect_ratio)
-        # return await self._generate_via_flux(prompt, aspect_ratio)
-        raise ValueError(f"Image model '{model}' not recognized. Select a Google model in ⚙️ Settings → 🖼 Image model.")
+        raise ValueError(f"Unknown image model '{model}'. Go to ⚙️ Settings → 🖼 Image model and reselect.")

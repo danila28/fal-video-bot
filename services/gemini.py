@@ -54,13 +54,8 @@ class GeminiService:
 
     def get_image_models(self):
         return [
-            # ── Google Gemini API (standard API key) ──────────────────────────
             {"name": "gemini-2.0-flash-preview-image-generation", "price": "⚡ Gemini Flash Image · ~$0.04/img"},
             {"name": "imagen-3.0-generate-001",                   "price": "🏆 Imagen 3 · ~$0.08/img"},
-            # ── Atlas Cloud (temporarily disabled) ───────────────────────────
-            # {"name": "black-forest-labs/flux-2-pro/text-to-image",       "price": "💰 FLUX 2 Pro · ~$0.05/img · универсальный"},
-            # {"name": "black-forest-labs/flux-kontext-pro-text-to-image",  "price": "⚖️  FLUX Kontext · ~$0.05/img · консистентность"},
-            # {"name": "ideogram/ideogram-v3/text-to-image",               "price": "🎨 Ideogram V3 · ~$0.08/img · стиль и арт"},
         ]
 
     def get_video_models(self):
