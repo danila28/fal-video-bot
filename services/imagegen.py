@@ -15,8 +15,8 @@ from services.atlas import AtlasClient
 
 logger = logging.getLogger(__name__)
 
-_NANO_BANANA_2_MODEL = "nano-banana-2"
-_NANO_BANANA_PRO_MODEL = "nano-banana-pro"
+_NANO_BANANA_2_MODEL = "google/nano-banana-2"
+_NANO_BANANA_PRO_MODEL = "google/nano-banana-pro"
 
 # All Nano Banana models are Atlas-hosted image generation models
 _IMAGE_MODELS = {_NANO_BANANA_2_MODEL, _NANO_BANANA_PRO_MODEL}
