@@ -15,8 +15,8 @@ from services.atlas import AtlasClient
 
 logger = logging.getLogger(__name__)
 
-_NANO_BANANA_2_MODEL = "google/nano-banana-2"
-_NANO_BANANA_PRO_MODEL = "google/nano-banana-pro"
+_NANO_BANANA_2_MODEL = "google/nano-banana-2/text-to-image"
+_NANO_BANANA_PRO_MODEL = "google/nano-banana-pro/text-to-image"
 
 # All Nano Banana models are Atlas-hosted image generation models
 _IMAGE_MODELS = {_NANO_BANANA_2_MODEL, _NANO_BANANA_PRO_MODEL}
@@ -46,10 +46,12 @@ class ImageGenService:
     async def _generate_via_atlas(self, prompt: str, model: str, aspect_ratio: str) -> str:
         """Generate image via Atlas Cloud Nano Banana models."""
         atlas = self._require_atlas()
-        # Try minimal params first — some models may not support aspect_ratio/output_format
         output_url = await atlas.generate_image(
             model,
-            {"prompt": prompt},
+            {
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+            },
         )
         return await atlas.download(output_url, ext="jpg")
 
