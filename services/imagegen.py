@@ -46,13 +46,10 @@ class ImageGenService:
     async def _generate_via_atlas(self, prompt: str, model: str, aspect_ratio: str) -> str:
         """Generate image via Atlas Cloud Nano Banana models."""
         atlas = self._require_atlas()
+        # Try minimal params first — some models may not support aspect_ratio/output_format
         output_url = await atlas.generate_image(
             model,
-            {
-                "prompt": prompt,
-                "aspect_ratio": aspect_ratio,
-                "output_format": "jpeg",
-            },
+            {"prompt": prompt},
         )
         return await atlas.download(output_url, ext="jpg")
 
