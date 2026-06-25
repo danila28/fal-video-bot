@@ -54,8 +54,8 @@ class GeminiService:
 
     def get_image_models(self):
         return [
-            {"name": "gemini-3.1-flash-image", "price": "⚡ Nano Banana 2 · ~$0.02/img"},
-            {"name": "gemini-3-pro-image",     "price": "🏆 Nano Banana Pro · ~$0.05/img"},
+            {"name": "google/nano-banana-2",   "price": "⚡ Nano Banana 2 · 4K native"},
+            {"name": "google/nano-banana-pro", "price": "🏆 Nano Banana Pro · 1K/2K/4K"},
         ]
 
     def get_video_models(self):
