@@ -35,7 +35,7 @@ _O3_PRO_REF    = "kwaivgi/kling-video-o3-pro/reference-to-video"
 _O3_STD_REF    = "kwaivgi/kling-video-o3-std/reference-to-video"
 _O3_PRO_EDIT   = "kwaivgi/kling-video-o3-pro/video-edit"
 _O3_STD_EDIT   = "kwaivgi/kling-video-o3-std/video-edit"
-_V3_OMNI_I2V   = "kwaivgi/kling-video-o3-4k/image-to-video"
+_V3_OMNI_I2V   = "kwaivgi/kling-video-o3-pro/image-to-video"
 # Multi-frame guidances endpoint (up to 6 shots × 5s = 15s per call)
 _V3_MULTI      = "kling-v3"
 
@@ -142,6 +142,7 @@ class KlingService:
                     "prompt": prompt,
                     "image": effective_urls[0],
                     "duration": duration,
+                    "aspect_ratio": aspect_ratio,
                 }
                 if negative_prompt:
                     params["negative_prompt"] = negative_prompt
