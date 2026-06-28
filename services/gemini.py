@@ -58,8 +58,8 @@ class GeminiService:
             {"name": "google/nano-banana-2/text-to-image",   "price": "⚡ Nano Banana 2 · 4K native"},
             {"name": "google/nano-banana-pro/text-to-image", "price": "🏆 Nano Banana Pro · 1K/2K/4K"},
             {"separator": True, "label": "── Gemini Developer API ──"},
-            {"name": "gemini-3.1-flash-image", "price": "⚡ Nano Banana 2 · fast"},
-            {"name": "gemini-3-pro-image",     "price": "🏆 Nano Banana Pro · best"},
+            {"name": "gemini-3.1-flash-image", "price": "🏆 Nano Banana Flash · best quality"},
+            {"name": "gemini-3-pro-image",     "price": "⚡ Nano Banana Pro · fast"},
         ]
 
     def get_video_models(self):
