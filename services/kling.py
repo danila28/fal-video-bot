@@ -142,7 +142,6 @@ class KlingService:
                     "prompt": prompt,
                     "image": effective_urls[0],
                     "duration": duration,
-                    "aspect_ratio": aspect_ratio,
                 }
                 if negative_prompt:
                     params["negative_prompt"] = negative_prompt
