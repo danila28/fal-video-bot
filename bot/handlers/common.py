@@ -206,18 +206,18 @@ async def generate_video_for_model(
             video_prompt=video_prompt, voiceover_text=voiceover_text,
             image_paths=image_paths, notify=notify, shots=shots,
         )
-    if model == "happy_horse":
-        return await _generate_happyhorse(
-            gemini=gemini, settings=settings,
-            video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_paths=image_paths, notify=notify, shots=shots,
-        )
-    if model == "pixverse":
-        return await _generate_pixverse(
-            gemini=gemini, settings=settings,
-            video_prompt=video_prompt, voiceover_text=voiceover_text,
-            image_paths=image_paths, notify=notify, shots=shots,
-        )
+    # if model == "happy_horse":
+    #     return await _generate_happyhorse(
+    #         gemini=gemini, settings=settings,
+    #         video_prompt=video_prompt, voiceover_text=voiceover_text,
+    #         image_paths=image_paths, notify=notify, shots=shots,
+    #     )
+    # if model == "pixverse":
+    #     return await _generate_pixverse(
+    #         gemini=gemini, settings=settings,
+    #         video_prompt=video_prompt, voiceover_text=voiceover_text,
+    #         image_paths=image_paths, notify=notify, shots=shots,
+    #     )
     # Seedance variants (default)
     return await _generate_seedance(
         gemini=gemini, settings=settings,
@@ -373,11 +373,15 @@ async def _generate_seedance(
             if i < len(scenes) - 1:
                 frame_path = await gemini.extract_last_frame(clip)
                 if frame_path:
-                    anchor_image_url = await seedance.upload_photo(frame_path)
                     try:
-                        os.remove(frame_path)
-                    except OSError:
-                        pass
+                        new_url = await seedance.upload_photo(frame_path)
+                        if new_url:
+                            anchor_image_url = new_url
+                    finally:
+                        try:
+                            os.remove(frame_path)
+                        except OSError:
+                            pass
         concat_transitions = transitions[:-1] if transitions else None
         raw_video = await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions) if len(clips) > 1 else clips[0]
 
@@ -527,11 +531,15 @@ async def _generate_kling(
             if i < n_batches - 1:
                 frame_path = await gemini.extract_last_frame(clip)
                 if frame_path:
-                    current_ref_url = await kling.upload_photo(frame_path)
                     try:
-                        os.remove(frame_path)
-                    except OSError:
-                        pass
+                        new_url = await kling.upload_photo(frame_path)
+                        if new_url:
+                            current_ref_url = new_url
+                    finally:
+                        try:
+                            os.remove(frame_path)
+                        except OSError:
+                            pass
 
         raw_video = (
             await gemini.concat_videos(clips, crossfade=0.5, transitions=batch_transitions)
@@ -574,11 +582,15 @@ async def _generate_kling(
                     if i < len(scenes) - 1:
                         frame_path = await gemini.extract_last_frame(clip)
                         if frame_path:
-                            current_img_url = await kling.upload_photo(frame_path)
                             try:
-                                os.remove(frame_path)
-                            except OSError:
-                                pass
+                                new_url = await kling.upload_photo(frame_path)
+                                if new_url:
+                                    current_img_url = new_url
+                            finally:
+                                try:
+                                    os.remove(frame_path)
+                                except OSError:
+                                    pass
                 clips.append(clip)
         else:
             if is_ref:
@@ -634,11 +646,15 @@ async def _generate_kling(
             if i < len(scenes) - 1:
                 frame_path = await gemini.extract_last_frame(clip)
                 if frame_path:
-                    anchor_image_url = await kling.upload_photo(frame_path)
                     try:
-                        os.remove(frame_path)
-                    except OSError:
-                        pass
+                        new_url = await kling.upload_photo(frame_path)
+                        if new_url:
+                            anchor_image_url = new_url
+                    finally:
+                        try:
+                            os.remove(frame_path)
+                        except OSError:
+                            pass
 
         concat_transitions = shot_transitions[:-1] if shot_transitions else None
         raw_video = (
@@ -769,11 +785,15 @@ async def _generate_pixverse(
                 if i < len(scenes) - 1:
                     frame_path = await gemini.extract_last_frame(clip)
                     if frame_path:
-                        current_img_url = await pixverse.upload_photo(frame_path)
                         try:
-                            os.remove(frame_path)
-                        except OSError:
-                            pass
+                            new_url = await pixverse.upload_photo(frame_path)
+                            if new_url:
+                                current_img_url = new_url
+                        finally:
+                            try:
+                                os.remove(frame_path)
+                            except OSError:
+                                pass
         else:
             anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
             clips = await pixverse.generate_clips(
@@ -797,11 +817,15 @@ async def _generate_pixverse(
             if i < len(scenes) - 1:
                 frame_path = await gemini.extract_last_frame(clip)
                 if frame_path:
-                    anchor_image_url = await pixverse.upload_photo(frame_path)
                     try:
-                        os.remove(frame_path)
-                    except OSError:
-                        pass
+                        new_url = await pixverse.upload_photo(frame_path)
+                        if new_url:
+                            anchor_image_url = new_url
+                    finally:
+                        try:
+                            os.remove(frame_path)
+                        except OSError:
+                            pass
 
     concat_transitions = transitions[:-1] if transitions else None
     raw_video = (
