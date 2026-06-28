@@ -388,15 +388,16 @@ async def settings_text_model(callback: CallbackQuery):
 async def settings_image_model(callback: CallbackQuery):
     await callback.answer()
     gemini = container.inject(GeminiService)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
+    rows = []
+    for m in gemini.get_image_models():
+        if m.get("separator"):
+            rows.append([InlineKeyboardButton(text=m["label"], callback_data="noop")])
+        else:
+            rows.append([InlineKeyboardButton(
                 text=f"{m['name']}  |  {m['price']}",
                 callback_data=f"image-model:{m['name']}",
-            )]
-            for m in gemini.get_image_models()
-        ]
-    )
+            )])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     await callback.message.answer("Choose image model:", reply_markup=keyboard)
 
 
