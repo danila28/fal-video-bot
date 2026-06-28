@@ -348,10 +348,12 @@ async def _generate_seedance(
                 model_id=atlas_model_id,
             )
     else:
+        # No reference images — fallback to T2V or clip-by-clip I2V with last-frame stitching
         await notify(
             f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)) — each clip takes ~3-5 min…"
         )
         clips = []
+        anchor_image_url = ""
         for i, (scene, dur) in enumerate(zip(scenes, durations)):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
             effective = (
@@ -359,8 +361,23 @@ async def _generate_seedance(
                 "same characters, same lighting, smooth flow. " + scene
                 if i > 0 else scene
             )
-            clip = await seedance.generate_clip(prompt=effective, duration=dur, resolution=resolution, model_id=atlas_model_id)
+            clip = await seedance.generate_clip(
+                prompt=effective,
+                image_url=anchor_image_url,  # Empty string first iteration (triggers T2V), then last-frame
+                duration=dur,
+                resolution=resolution,
+                model_id=atlas_model_id
+            )
             clips.append(clip)
+            # Extract last frame for next clip's anchor (continuity stitching)
+            if i < len(scenes) - 1:
+                frame_path = await gemini.extract_last_frame(clip)
+                if frame_path:
+                    anchor_image_url = await seedance.upload_photo(frame_path)
+                    try:
+                        os.remove(frame_path)
+                    except OSError:
+                        pass
         concat_transitions = transitions[:-1] if transitions else None
         raw_video = await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions) if len(clips) > 1 else clips[0]
 
@@ -591,12 +608,13 @@ async def _generate_kling(
             if len(clips) > 1 else clips[0]
         )
 
-    # ── T2V path ─────────────────────────────────────────────────────────────
+    # ── T2V path (no reference images) ──────────────────────────────────────────
     else:
         await notify(
             f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)) — each clip takes ~2-4 min…"
         )
         clips = []
+        anchor_image_url = ""
         for i, (scene, dur) in enumerate(zip(scenes, shot_durations_list)):
             await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
             effective = (
@@ -606,11 +624,21 @@ async def _generate_kling(
             )
             clip = await kling.generate_clip(
                 prompt=effective,
+                image_url=anchor_image_url,  # Empty first iteration (T2V), then last-frame
                 duration=dur,
                 negative_prompt=negative_prompt,
                 model_id=atlas_model_id,
             )
             clips.append(clip)
+            # Extract last frame for next clip's anchor (continuity stitching)
+            if i < len(scenes) - 1:
+                frame_path = await gemini.extract_last_frame(clip)
+                if frame_path:
+                    anchor_image_url = await kling.upload_photo(frame_path)
+                    try:
+                        os.remove(frame_path)
+                    except OSError:
+                        pass
 
         concat_transitions = shot_transitions[:-1] if shot_transitions else None
         raw_video = (
@@ -754,11 +782,26 @@ async def _generate_pixverse(
                 clip_duration=5,
             )
     else:
+        # No reference images — clip-by-clip generation with last-frame stitching
         clips = []
+        anchor_image_url = ""
         for i, (scene, dur) in enumerate(zip(scenes, durations)):
             await notify(f"🎞 PixVerse clip {i + 1}/{len(scenes)}…")
-            clip = await pixverse.generate_clip(prompt=scene, duration=dur)
+            clip = await pixverse.generate_clip(
+                prompt=scene,
+                image_url=anchor_image_url,  # Empty first iteration (T2V), then last-frame
+                duration=dur
+            )
             clips.append(clip)
+            # Extract last frame for next clip's anchor (continuity stitching)
+            if i < len(scenes) - 1:
+                frame_path = await gemini.extract_last_frame(clip)
+                if frame_path:
+                    anchor_image_url = await pixverse.upload_photo(frame_path)
+                    try:
+                        os.remove(frame_path)
+                    except OSError:
+                        pass
 
     concat_transitions = transitions[:-1] if transitions else None
     raw_video = (
