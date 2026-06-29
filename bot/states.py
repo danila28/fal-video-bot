@@ -20,6 +20,7 @@ class GenerationState(StatesGroup):
     SET_VOICE_ID = State()
     SET_MUSIC_PATH = State()
     SET_UTC_OFFSET = State()
+    SET_CUSTOM_DURATION = State()
 
     RAW_PROMPT = State()
     ENHANCE_PROMPT = State()

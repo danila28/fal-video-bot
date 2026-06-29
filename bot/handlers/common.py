@@ -930,22 +930,12 @@ def _strip_voiceover(video_prompt: str) -> str:
 # ── Prompt builders ─────────────────────────────────────────────────────────
 
 def _clip_duration_for_model(video_model: str) -> int:
-    """Return the per-scene duration (seconds) for the given video model.
-
-    For multi-frame Kling models this is the per-shot duration (5s); the actual
-    API call batches up to 3 shots into a single 15s guidances request.
-    Regular Kling I2V/T2V supports only 5 or 10 seconds per clip.
-    """
-    if video_model == "pixverse":
-        return 5
-    if video_model == "happy_horse":
-        return 15
+    """Return the per-scene duration (seconds) for the given video model."""
+    if video_model.startswith("kling"):
+        return 15  # All Kling models support up to 15 seconds
     if video_model.startswith("seedance"):
         return 15
-    from services.kling import MULTIFRAME_SETTINGS_KEYS as _MF
-    if video_model in _MF:
-        return 5   # per-shot duration; 3 shots = 15s per guidances call
-    return 15      # Omni (O3 4K) — lip-sync I2V, max 15s
+    return 15      # Default for all other models
 
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:

@@ -81,6 +81,10 @@ def get_duration_keyboard(current: int = 30):
             text=f"{mark}{d}s",
             callback_data=f"settings:duration:{d}",
         )])
+    rows.append([InlineKeyboardButton(
+        text="✏️ Custom duration",
+        callback_data="settings:duration:custom",
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -287,10 +287,20 @@ async def settings_duration(callback: CallbackQuery):
 
 
 @router.callback_query(lambda c: c.data.startswith("settings:duration:"), IsAllowed(allowed_users))
-async def settings_duration_selected(callback: CallbackQuery):
+async def settings_duration_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    duration_str = callback.data.split(":")[-1]
+
+    if duration_str == "custom":
+        await callback.message.answer(
+            "Enter video duration in seconds (5-300):\n"
+            "Examples: 9, 10, 12, 15, 20, 30"
+        )
+        await state.set_state(GenerationState.SET_CUSTOM_DURATION)
+        return
+
     try:
-        duration = int(callback.data.split(":")[-1])
+        duration = int(duration_str)
         if duration not in DURATION_SEGMENTS:
             await callback.message.answer("❌ Invalid duration.")
             return
@@ -307,6 +317,29 @@ async def settings_duration_selected(callback: CallbackQuery):
         )
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
+
+
+@router.message(GenerationState.SET_CUSTOM_DURATION, IsAllowed(allowed_users))
+async def handle_custom_duration(message: Message, state: FSMContext):
+    try:
+        duration = int(message.text.strip())
+        if duration < 5 or duration > 300:
+            await message.answer("❌ Duration must be between 5-300 seconds. Try again.")
+            return
+
+        db = container.inject(DBService)
+        await db.update_settings(
+            message.from_user.id, message.chat.id, {"target_duration": duration}
+        )
+        await message.answer(
+            f"✅ Target duration set to <b>{duration}s</b>.", parse_mode="HTML"
+        )
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Please enter a valid number (5-300).")
+    except Exception as e:
+        await message.answer(f"❌ Error: {e}")
+        await state.clear()
 
 
 @router.callback_query(lambda c: c.data == "settings:image_count", IsAllowed(allowed_users))
