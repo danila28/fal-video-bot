@@ -42,33 +42,12 @@ from bot.handlers.common import (
     _post_process_video,
     _show_video_prompt,
     _split_video_prompt,
+    _substitute_prompt_vars,
     generate_video_for_model,
 )
 
 router = Router()
 logger = logging.getLogger(__name__)
-
-
-def _substitute_prompt_vars(prompt: str, settings: dict) -> str:
-    """Substitute {DURATION}, {NUM_SCENES}, {SCENE_DURATION} from settings."""
-    from bot.handlers.common import _clip_duration_for_model
-    import math
-
-    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
-    video_model = (settings.get("video_model") or "seedance").lower()
-
-    # Use the same duration logic as the video generation pipeline
-    clip_duration = _clip_duration_for_model(video_model)
-
-    # Calculate number of scenes and per-scene duration
-    num_scenes = max(1, math.ceil(target_duration / clip_duration))
-    scene_duration = target_duration // num_scenes if num_scenes > 0 else clip_duration
-
-    return prompt.format(
-        DURATION=target_duration,
-        NUM_SCENES=num_scenes,
-        SCENE_DURATION=scene_duration,
-    )
 
 
 async def _send_image_preview(message, image_paths: list[str]) -> None:

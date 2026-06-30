@@ -46,6 +46,25 @@ DURATION_SEGMENTS: dict[int, tuple[int, int, int]] = {
 DEFAULT_TARGET_DURATION = 30
 
 
+def _substitute_prompt_vars(prompt: str, settings: dict) -> str:
+    """Substitute {DURATION}, {NUM_SCENES}, {SCENE_DURATION} from settings."""
+    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    video_model = (settings.get("video_model") or "seedance").lower()
+
+    # Use the same duration logic as the video generation pipeline
+    clip_duration = _clip_duration_for_model(video_model)
+
+    # Calculate number of scenes and per-scene duration
+    num_scenes = max(1, math.ceil(target_duration / clip_duration))
+    scene_duration = target_duration // num_scenes if num_scenes > 0 else clip_duration
+
+    return prompt.format(
+        DURATION=target_duration,
+        NUM_SCENES=num_scenes,
+        SCENE_DURATION=scene_duration,
+    )
+
+
 # ── State helpers ────────────────────────────────────────────────────────────
 
 async def _is_generating(state: FSMContext) -> bool:
@@ -940,7 +959,6 @@ def _clip_duration_for_model(video_model: str) -> int:
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
     """Generate video script as structured JSON. Falls back to text format on parse failure."""
-    from bot.handlers.generation import _substitute_prompt_vars
     base_sys = _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
@@ -1027,7 +1045,6 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
 
 async def _build_video_prompt_text(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
     """Text-format fallback (original implementation)."""
-    from bot.handlers.generation import _substitute_prompt_vars
     base_sys = _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
