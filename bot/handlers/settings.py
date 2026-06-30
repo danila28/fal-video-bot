@@ -334,11 +334,11 @@ async def handle_custom_duration(message: Message, state: FSMContext):
         await message.answer(
             f"✅ Target duration set to <b>{duration}s</b>.", parse_mode="HTML"
         )
-        await state.clear()
     except ValueError:
         await message.answer("❌ Please enter a valid number (5-300).")
     except Exception as e:
         await message.answer(f"❌ Error: {e}")
+    finally:
         await state.clear()
 
 
