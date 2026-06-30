@@ -126,9 +126,10 @@ class KlingService:
                     "duration": duration,
                     "aspect_ratio": aspect_ratio,
                     "mode": "pro",
+                    "generate_audio": False,  # Audio comes from audio_ref (ElevenLabs TTS)
                 }
                 if voice_element_audio_url:
-                    params["voice_element_audio"] = voice_element_audio_url
+                    params["audio_ref"] = voice_element_audio_url
             elif is_reference:
                 params = {
                     "prompt": prompt,
@@ -151,6 +152,7 @@ class KlingService:
                 "prompt": prompt,
                 "duration": duration,
                 "aspect_ratio": aspect_ratio,
+                "sound": False,  # Disable Kling's built-in foley audio for T2V
             }
 
         logger.info(

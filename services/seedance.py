@@ -113,7 +113,6 @@ class SeedanceService:
                     "aspect_ratio": aspect_ratio,
                     "resolution": resolution,
                     "generate_audio": False,
-                    "watermark": False,
                 }
             elif audio_ref_url:
                 # Audio-ref I2V: `[Audio1]` tag in prompt, audio drives lip/motion sync
@@ -130,7 +129,6 @@ class SeedanceService:
                     "ratio": aspect_ratio,
                     "resolution": resolution,
                     "generate_audio": False,
-                    "watermark": False,
                 }
             else:
                 params = {
@@ -140,7 +138,6 @@ class SeedanceService:
                     "ratio": aspect_ratio,
                     "resolution": resolution,
                     "generate_audio": False,
-                    "watermark": False,
                 }
         else:
             model = _T2V

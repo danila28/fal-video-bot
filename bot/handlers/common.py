@@ -447,8 +447,9 @@ async def _generate_kling(
         if not valid_paths:
             raise ValueError("Kling Omni requires a reference photo.")
 
-        audio_dur = await asyncio.to_thread(GeminiService._probe_duration, tts_audio_path)
-        clip_dur_sec = max(3, min(15, int(math.ceil(audio_dur))))
+        # Use target_duration, not audio duration (user wants specific video length)
+        target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+        clip_dur_sec = max(3, min(15, target_duration))
 
         await notify(
             f"⏱ Generating <b>{label}</b> ({clip_dur_sec}s, native lip-sync) — takes ~3-5 min…"
