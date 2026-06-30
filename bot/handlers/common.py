@@ -940,7 +940,8 @@ def _clip_duration_for_model(video_model: str) -> int:
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
     """Generate video script as structured JSON. Falls back to text format on parse failure."""
-    base_sys = settings.get("system_video_prompt") or ""
+    from bot.handlers.generation import _substitute_prompt_vars
+    base_sys = _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
     clip_duration = _clip_duration_for_model(video_model)
@@ -1026,7 +1027,8 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
 
 async def _build_video_prompt_text(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
     """Text-format fallback (original implementation)."""
-    base_sys = settings.get("system_video_prompt") or ""
+    from bot.handlers.generation import _substitute_prompt_vars
+    base_sys = _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
     clip_duration = _clip_duration_for_model(video_model)
