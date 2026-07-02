@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 _BASE_URL      = "https://api.atlascloud.ai/api/v1"
 _POLL_INTERVAL = 5    # seconds between status checks
 _POLL_TIMEOUT  = 600  # 10 minutes max wait
+_POLL_MAX_TRANSIENT_ERRORS = 6  # consecutive 5xx/network errors tolerated before giving up
 
 
 class AtlasClient:
@@ -105,19 +106,44 @@ class AtlasClient:
             # ── Poll ─────────────────────────────────────────────────
             poll_url = f"{_BASE_URL}/model/prediction/{pred_id}"
             elapsed = 0
+            consecutive_errors = 0
             while elapsed < _POLL_TIMEOUT:
                 await asyncio.sleep(_POLL_INTERVAL)
                 elapsed += _POLL_INTERVAL
 
-                async with session.get(
-                    poll_url, headers=self._auth_headers
-                ) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        raise Exception(
-                            f"Atlas poll failed HTTP {resp.status}: {text[:200]}"
+                try:
+                    async with session.get(
+                        poll_url, headers=self._auth_headers
+                    ) as resp:
+                        if resp.status != 200:
+                            text = await resp.text()
+                            # Atlas's gateway occasionally returns a transient
+                            # 5xx (HTML error page) mid-generation — retry a
+                            # few times instead of failing the whole job.
+                            if resp.status >= 500 and consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
+                                consecutive_errors += 1
+                                logger.warning(
+                                    f"Atlas poll transient HTTP {resp.status} "
+                                    f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
+                                    f"retrying: {pred_id}"
+                                )
+                                continue
+                            raise Exception(
+                                f"Atlas poll failed HTTP {resp.status}: {text[:200]}"
+                            )
+                        poll = await resp.json()
+                except aiohttp.ClientError as e:
+                    if consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
+                        consecutive_errors += 1
+                        logger.warning(
+                            f"Atlas poll network error "
+                            f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
+                            f"retrying: {pred_id}: {e}"
                         )
-                    poll = await resp.json()
+                        continue
+                    raise Exception(f"Atlas poll network error: {e}")
+
+                consecutive_errors = 0
 
                 # Normalise: {"data": {...}} or flat {"status": ...}
                 status_data = poll.get("data") or poll
