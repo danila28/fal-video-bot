@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _NATIVE_AUDIO_MODELS = {"happy_horse", "kling_omni", "seedance_audio_ref"}
 
 # Models that generate video from text only — no reference image needed or used.
-_T2V_VIDEO_MODELS = {"seedance_t2v", "kling_t2v"}
+_T2V_VIDEO_MODELS = {"seedance_t2v", "kling_t2v", "kling_turbo_t2v"}
 
 
 # ── Duration config ──────────────────────────────────────────────────────────
@@ -218,8 +218,8 @@ async def generate_video_for_model(
         if parsed is not None:
             shots = parsed.get("shots") or None
 
-    if model in {"kling", "kling_t2v", "kling_omni", "kling_v3_std", "kling_o3_pro", "kling_o3_std",
-                 "kling_o3_pro_ref", "kling_o3_std_ref"}:
+    if model in {"kling", "kling_t2v", "kling_omni", "kling_v3_std", "kling_turbo", "kling_turbo_t2v",
+                 "kling_o3_pro", "kling_o3_std", "kling_o3_pro_ref", "kling_o3_std_ref"}:
         return await _generate_kling(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
@@ -321,7 +321,8 @@ async def _generate_seedance(
     else:
         n_clips = max(1, math.ceil(target_duration / clip_dur))
         scenes = _split_scene_into_shots(video_prompt, n_clips)
-        durations = [clip_dur] * len(scenes)
+        per_clip_dur = clip_dur if n_clips > 1 else max(4, min(clip_dur, target_duration))
+        durations = [per_clip_dur] * len(scenes)
         transitions = None
 
     is_t2v = model in _T2V_VIDEO_MODELS
@@ -494,7 +495,8 @@ async def _generate_kling(
     else:
         n_clips = max(1, math.ceil(target_duration / clip_dur))
         scenes = _split_scene_into_shots(video_prompt, n_clips)
-        shot_durations_list = [clip_dur] * len(scenes)
+        per_clip_dur = clip_dur if n_clips > 1 else max(3, min(clip_dur, target_duration))
+        shot_durations_list = [per_clip_dur] * len(scenes)
         shot_transitions = None
 
     is_t2v = model in _T2V_VIDEO_MODELS
@@ -967,10 +969,6 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
     _SINGLE_CLIP_MODELS = {"happy_horse", "kling_omni", "seedance_audio_ref"}
     is_single_clip = video_model in _SINGLE_CLIP_MODELS
 
-    n_clips = 1 if is_single_clip else max(1, math.ceil(target_duration / clip_duration))
-    actual_duration = n_clips * clip_duration
-    target_words = max(20, int(actual_duration * 2.5))
-
     # Per-model duration constraints
     if video_model.startswith("seedance"):
         min_dur, max_dur = 4, 15
@@ -980,6 +978,16 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
         min_dur, max_dur = 3, 10
     else:
         min_dur, max_dur = 4, clip_duration
+
+    n_clips = 1 if is_single_clip else max(1, math.ceil(target_duration / clip_duration))
+    # A single clip can match the user's exact target instead of always
+    # rounding up to the model's max per-clip length (e.g. 5s target → 5s
+    # clip, not 15s). Multi-clip totals still quantize to clip_duration.
+    actual_duration = (
+        max(min_dur, min(max_dur, target_duration)) if n_clips == 1
+        else n_clips * clip_duration
+    )
+    target_words = max(20, int(actual_duration * 2.5))
 
     shot_mode_str = "single" if is_single_clip else "multi"
     if is_single_clip:
@@ -1053,8 +1061,20 @@ async def _build_video_prompt_text(enhance_prompt: str, settings: dict, gemini: 
     _SINGLE_CLIP_MODELS = {"happy_horse", "kling_omni", "seedance_audio_ref"}
     is_single_clip = video_model in _SINGLE_CLIP_MODELS
 
+    if video_model.startswith("seedance"):
+        min_dur, max_dur = 4, 15
+    elif video_model == "pixverse":
+        min_dur, max_dur = 3, 8
+    elif "kling" in video_model:
+        min_dur, max_dur = 3, 10
+    else:
+        min_dur, max_dur = 4, clip_duration
+
     n_clips = 1 if is_single_clip else max(1, math.ceil(target_duration / clip_duration))
-    actual_duration = n_clips * clip_duration
+    actual_duration = (
+        max(min_dur, min(max_dur, target_duration)) if n_clips == 1
+        else n_clips * clip_duration
+    )
     target_words = max(20, int(actual_duration * 2.3))
     scene_word_limit = n_clips * 50
 

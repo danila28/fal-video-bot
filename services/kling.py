@@ -146,7 +146,7 @@ class KlingService:
                 if negative_prompt:
                     params["negative_prompt"] = negative_prompt
         else:
-            model = _V3_PRO_T2V
+            model = model_id
             params = {
                 "prompt": prompt,
                 "duration": duration,
