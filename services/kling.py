@@ -286,7 +286,7 @@ class KlingService:
             "multi_shot": True,
             "shot_type": "customize",
             "multi_prompt": [
-                {"prompt": p, "duration": effective_durs[i]}
+                {"index": i, "prompt": p, "duration": effective_durs[i]}
                 for i, p in enumerate(scene_prompts)
             ],
             "sound": motion_has_audio,
