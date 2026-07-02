@@ -488,19 +488,21 @@ async def _generate_kling(
 
     # ── Multi-frame path (kling, kling_v3_std, kling_t2v) ────────────────────
     if model in _KLING_MF_KEYS:
-        _SHOTS_PER_BATCH = 3
-        batches = [scenes[i:i + _SHOTS_PER_BATCH] for i in range(0, len(scenes), _SHOTS_PER_BATCH)]
-        batch_dur_lists = [
-            shot_durations_list[i:i + _SHOTS_PER_BATCH]
-            for i in range(0, len(shot_durations_list), _SHOTS_PER_BATCH)
-        ]
+        # Atlas caps one multi_shot call at 15s total (and 6 shots max) — group
+        # shots by cumulative duration, not by a fixed shot count, so a batch
+        # of long shots can't silently exceed the per-call limit.
+        _BATCH_MAX_DURATION = 15
+        _BATCH_MAX_SHOTS = 6
+        batch_indices = _batch_shot_indices(shot_durations_list, _BATCH_MAX_DURATION, _BATCH_MAX_SHOTS)
+        batches = [[scenes[i] for i in idxs] for idxs in batch_indices]
+        batch_dur_lists = [[shot_durations_list[i] for i in idxs] for idxs in batch_indices]
         n_batches = len(batches)
 
         batch_transitions: list[str] | None = None
         if shot_transitions and n_batches > 1:
             batch_transitions = []
-            for bi, batch in enumerate(batches[:-1]):
-                last_idx = bi * _SHOTS_PER_BATCH + len(batch) - 1
+            for idxs in batch_indices[:-1]:
+                last_idx = idxs[-1]
                 t = shot_transitions[last_idx] if last_idx < len(shot_transitions) else "cut"
                 batch_transitions.append(t)
 
@@ -783,6 +785,26 @@ def _plan_clip_durations(target_duration: int, min_dur: int, max_dur: int) -> li
     remainder = target_duration - base * n_clips
     durations = [base + (1 if i < remainder else 0) for i in range(n_clips)]
     return [max(min_dur, min(max_dur, d)) for d in durations]
+
+
+def _batch_shot_indices(durations: list[int], max_batch_duration: int, max_shots_per_batch: int) -> list[list[int]]:
+    """Group shot indices into batches whose durations sum to at most
+    max_batch_duration (Atlas Cloud's per-call limit for Kling's multi_shot
+    API), instead of a fixed shot count — a batch may hold few long shots or
+    several short ones, as long as the total fits in one Atlas call."""
+    batches: list[list[int]] = []
+    current: list[int] = []
+    current_dur = 0
+    for i, dur in enumerate(durations):
+        if current and (current_dur + dur > max_batch_duration or len(current) >= max_shots_per_batch):
+            batches.append(current)
+            current = []
+            current_dur = 0
+        current.append(i)
+        current_dur += dur
+    if current:
+        batches.append(current)
+    return batches
 
 
 async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
