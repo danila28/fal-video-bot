@@ -194,7 +194,7 @@ class KlingService:
         self,
         scene_prompts: list[str],
         anchor_photo_urls: list[str],
-        clip_duration: int = 10,
+        clip_duration: int | list[int] = 10,
         negative_prompt: str = "",
         model_id: str = _V3_PRO_I2V,
         all_reference_urls: list[str] | None = None,
@@ -206,12 +206,18 @@ class KlingService:
         images when provided.
         For Reference models: passes `all_reference_urls` (all uploaded images) to
         every clip so the model uses all of them for character consistency.
+        clip_duration: single value applied to every clip, or a per-clip list.
         """
         is_reference = model_id in _REFERENCE_MODELS
         clips: list[str] = []
+        durations = (
+            clip_duration if isinstance(clip_duration, list)
+            else [clip_duration] * len(scene_prompts)
+        )
 
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
             logger.info(f"Kling clip {i + 1}/{len(scene_prompts)} | model={model_id}")
+            dur = durations[i] if i < len(durations) else durations[-1]
 
             if is_reference and i > 0:
                 effective_prompt = (
@@ -226,14 +232,14 @@ class KlingService:
                 clip_path = await self.generate_clip(
                     prompt=effective_prompt,
                     image_urls=all_reference_urls,
-                    duration=clip_duration,
+                    duration=dur,
                     model_id=model_id,
                 )
             else:
                 clip_path = await self.generate_clip(
                     prompt=effective_prompt,
                     image_url=photo_url,
-                    duration=clip_duration,
+                    duration=dur,
                     negative_prompt=negative_prompt,
                     model_id=model_id,
                 )

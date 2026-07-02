@@ -1,7 +1,7 @@
 """Gemini text generation + ffmpeg post-processing.
 
 This service replaces video-gen-bot's VertexService for atlas-video-bot.
-Video generation lives in dedicated Atlas Cloud services (Kling / Seedance / PixVerse / HappyHorse);
+Video generation lives in dedicated Atlas Cloud services (Kling / Seedance);
 this module keeps only:
   • Gemini text generation (idea / plot / image / video prompts, hashtags)
   • ffmpeg helpers shared across pipelines: mux audio, karaoke ASS,
@@ -85,9 +85,6 @@ class GeminiService:
             {"separator": True, "label": "── 🎙 Lip-Sync (нужен голос + фото) ──"},
             {"name": "kling_omni",         "price": "🎙 Kling v3 Omni · ~$0.12/sec"},
             {"name": "seedance_audio_ref", "price": "🎙 Seedance Audio Ref · ~$0.08/sec"},
-            {"separator": True, "label": "── Другие ──"},
-            {"name": "happy_horse",        "price": "🐴 Happy Horse · ~$0.14/sec"},
-            {"name": "pixverse",           "price": "✨ PixVerse · ~$0.05/sec"},
         ]
 
     # ── Text generation ────────────────────────────────────────────────────

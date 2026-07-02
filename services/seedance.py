@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 _I2V       = "bytedance/seedance-2.0/image-to-video"
 _T2V       = "bytedance/seedance-2.0/text-to-video"
-_FAST_I2V  = "bytedance/seedance-2.0/fast/image-to-video"
+_FAST_I2V  = "bytedance/seedance-2.0-fast/image-to-video"
 _REF       = "bytedance/seedance-2.0/reference-to-video"
-_FAST_REF  = "bytedance/seedance-2.0/fast/reference-to-video"
+_FAST_REF  = "bytedance/seedance-2.0-fast/reference-to-video"
 
 # Backwards-compat aliases
 _MODEL_IMAGE_TO_VIDEO = _I2V
@@ -162,6 +162,7 @@ class SeedanceService:
         scene_prompts: list[str],
         image_url: str = "",
         clip_duration: int = 15,
+        total_duration: int | None = None,
         model_id: str = "",
         aspect_ratio: str = "9:16",
         resolution: str = "720p",
@@ -170,14 +171,16 @@ class SeedanceService:
 
         All scenes are rendered by the model in one shot, preserving visual
         continuity without the need for last-frame stitching.
-        Total duration = clip_duration * len(scene_prompts).
+        total_duration overrides the clip_duration * len(scene_prompts) default —
+        pass it to hit an exact target duration instead of a per-scene multiple.
         """
         os.makedirs(self.static_dir, exist_ok=True)
 
         combined_prompt = " ".join(
             f"[Scene{i + 1}] {p}" for i, p in enumerate(scene_prompts)
         )
-        total_duration = clip_duration * len(scene_prompts)
+        if total_duration is None:
+            total_duration = clip_duration * len(scene_prompts)
 
         atlas_model = model_id or (_I2V if image_url else _T2V)
         params: dict = {
