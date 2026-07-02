@@ -36,8 +36,6 @@ _O3_STD_REF    = "kwaivgi/kling-video-o3-std/reference-to-video"
 _O3_PRO_EDIT   = "kwaivgi/kling-video-o3-pro/video-edit"
 _O3_STD_EDIT   = "kwaivgi/kling-video-o3-std/video-edit"
 _V3_OMNI_I2V   = "kwaivgi/kling-video-o3-pro/image-to-video"
-# Multi-frame guidances endpoint (up to 6 shots × 5s = 15s per call)
-_V3_MULTI      = "kling-v3"
 
 # Backwards-compat aliases used by existing code
 _MODEL_IMAGE_TO_VIDEO = _V3_PRO_I2V
@@ -74,7 +72,8 @@ MODEL_LABELS: dict[str, str] = {
 _REFERENCE_MODELS = {_O3_PRO_REF, _O3_STD_REF}
 _OMNI_MODELS      = {_V3_OMNI_I2V}
 
-# Settings keys whose generation uses the guidances/multi-frame API
+# Settings keys whose generation uses the multi_shot storyboard API
+# (same model IDs as normal generation, with multi_shot=True + multi_prompt=[...])
 MULTIFRAME_SETTINGS_KEYS: frozenset[str] = frozenset({"kling", "kling_v3_std", "kling_t2v"})
 
 
@@ -260,16 +259,21 @@ class KlingService:
         shot_durations: list[int] | None = None,
         image_reference_url: str = "",
         motion_has_audio: bool = False,
-        face_consistency: bool = True,
         negative_prompt: str = "",
+        model_id: str = _V3_PRO_T2V,
+        aspect_ratio: str = "9:16",
     ) -> str:
-        """Generate one clip via the guidances (multi-frame) API.
+        """Generate one clip via Kling's multi_shot storyboard mode.
+
+        Uses the model's normal generateVideo model ID with multi_shot=True
+        and a multi_prompt array — NOT a separate "guidances" endpoint/model
+        (that field/model ID doesn't exist on Atlas Cloud and returns HTTP 400).
 
         scene_prompts: up to 6 shot descriptions (max 6 × 5s = 15s per call).
         shot_durations: per-shot durations; falls back to shot_duration if absent.
         image_reference_url: single character anchor image for I2V; omit for T2V.
-        motion_has_audio: let Kling generate its own background audio.
-        face_consistency: stabilise facial features across shots.
+        motion_has_audio: let Kling generate its own synchronized audio ("sound").
+        model_id: I2V or T2V Kling model ID (kling/kling_v3_std/kling_t2v tier).
         """
         os.makedirs(self.static_dir, exist_ok=True)
         effective_durs = (
@@ -278,24 +282,28 @@ class KlingService:
             else [shot_duration] * len(scene_prompts)
         )
         params: dict = {
-            "guidances": [
-                {"index": i, "prompt": p, "duration": effective_durs[i]}
+            "duration": sum(effective_durs),
+            "multi_shot": True,
+            "shot_type": "customize",
+            "multi_prompt": [
+                {"prompt": p, "duration": effective_durs[i]}
                 for i, p in enumerate(scene_prompts)
             ],
-            "motion_has_audio": motion_has_audio,
-            "face_consistency": face_consistency,
+            "sound": motion_has_audio,
         }
         if image_reference_url:
-            params["image_reference"] = image_reference_url
+            params["image"] = image_reference_url
+        else:
+            params["aspect_ratio"] = aspect_ratio
         if negative_prompt:
             params["negative_prompt"] = negative_prompt
 
         logger.info(
-            f"Kling multi-frame | shots={len(scene_prompts)} × {shot_duration}s"
-            f" | total={len(scene_prompts) * shot_duration}s"
+            f"Kling multi-shot | model={model_id} | shots={len(scene_prompts)}"
+            f" | total={sum(effective_durs)}s"
             f" | ref={'yes' if image_reference_url else 'no'}"
         )
-        video_url = await self._atlas.generate_video(_V3_MULTI, params)
+        video_url = await self._atlas.generate_video(model_id, params)
         return await self._atlas.download(video_url, ext="mp4")
 
     async def _extract_last_frame(self, video_path: str) -> str:

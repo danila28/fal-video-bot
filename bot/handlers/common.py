@@ -543,8 +543,8 @@ async def _generate_kling(
                 shot_durations=b_durs,
                 image_reference_url=current_ref_url,
                 motion_has_audio=use_native_audio,
-                face_consistency=bool(current_ref_url),
                 negative_prompt=negative_prompt,
+                model_id=atlas_model_id,
             )
             clips.append(clip)
 
