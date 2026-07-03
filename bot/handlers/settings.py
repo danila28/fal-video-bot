@@ -341,9 +341,7 @@ async def settings_image_count(callback: CallbackQuery):
         "Choose how many reference images to generate per video.\n\n"
         "<b>How it works:</b>\n"
         "• <b>I2V models</b> (Kling, Seedance): images are cycled across clips "
-        "— clip 1 uses photo 1, clip 2 uses photo 2, etc.\n"
-        "• <b>Reference models</b> (Kling Ref, Seedance Ref): <i>all</i> images are passed "
-        "to every clip so the model uses all of them for character consistency.\n\n"
+        "— clip 1 uses photo 1, clip 2 uses photo 2, etc.\n\n"
         "More photos → more visual variety and better character anchoring.",
         parse_mode="HTML",
         reply_markup=get_image_count_keyboard(current),
