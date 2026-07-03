@@ -142,6 +142,7 @@ class KlingService:
                     "prompt": prompt,
                     "image": effective_urls[0],
                     "duration": duration,
+                    "sound": False,  # Base clip stays silent — our own TTS mix replaces it in post-processing
                 }
                 if negative_prompt:
                     params["negative_prompt"] = negative_prompt

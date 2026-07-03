@@ -432,7 +432,7 @@ async def settings_video_model(callback: CallbackQuery):
             rows.append([InlineKeyboardButton(text=m["label"], callback_data="noop")])
         else:
             rows.append([InlineKeyboardButton(
-                text=f"{m['name']}  |  {m['price']}",
+                text=m["price"],
                 callback_data=f"video-model:{m['name']}",
             )])
     keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
