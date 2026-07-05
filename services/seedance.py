@@ -31,6 +31,17 @@ _MINI_T2V  = "bytedance/seedance-2.0-mini/text-to-video"
 _MODEL_IMAGE_TO_VIDEO = _I2V
 _MODEL_TEXT_TO_VIDEO  = _T2V
 
+# Atlas hard limit: one Seedance request renders at most 15 seconds.
+_MAX_CALL_DURATION = 15
+
+
+def _normalize_resolution(model_id: str, resolution: str) -> str:
+    """Mini models don't accept plain '1080p' — only the '-SR' (super-resolution)
+    variant. Other tiers accept 720p/1080p as-is."""
+    if "mini" in model_id and resolution == "1080p":
+        return "1080p-SR"
+    return resolution
+
 # Map from settings model name → Atlas model ID
 MODEL_IDS: dict[str, str] = {
     "seedance":           _I2V,
@@ -76,6 +87,8 @@ class SeedanceService:
         sibling of `model_id` (same tier — Mini stays Mini, Fast stays base T2V).
         """
         os.makedirs(self.static_dir, exist_ok=True)
+        duration = max(4, min(_MAX_CALL_DURATION, duration))
+        resolution = _normalize_resolution(model_id, resolution)
 
         # image_urls takes priority over image_url
         effective_urls = image_urls if image_urls else ([image_url] if image_url else [])
@@ -135,6 +148,15 @@ class SeedanceService:
         )
         if total_duration is None:
             total_duration = clip_duration * len(scene_prompts)
+        if total_duration > _MAX_CALL_DURATION:
+            # One Atlas call renders at most 15s — the caller must split longer
+            # targets into several clips (generate_clips) instead.
+            logger.warning(
+                f"Seedance multi-scene {total_duration}s exceeds {_MAX_CALL_DURATION}s "
+                f"per-call limit — clamping (use generate_clips for longer videos)"
+            )
+            total_duration = _MAX_CALL_DURATION
+        resolution = _normalize_resolution(model_id or "", resolution)
 
         atlas_model = model_id or (_I2V if image_url else _T2V)
         params: dict = {
@@ -159,7 +181,8 @@ class SeedanceService:
         self,
         scene_prompts: list[str],
         anchor_photo_urls: list[str],
-        clip_duration: int = 10,
+        clip_duration: int | list[int] = 10,
+        resolution: str = "720p",
         model_id: str = _I2V,
     ) -> list[str]:
         """Generate multiple clips.
@@ -167,16 +190,23 @@ class SeedanceService:
         Extracts the last frame after each clip and uses it as the anchor for
         the next clip (visual continuity). `anchor_photo_urls` cycles through
         multiple images when provided.
+        clip_duration: single value for every clip, or a per-clip list.
         """
         clips: list[str] = []
+        durations = (
+            clip_duration if isinstance(clip_duration, list)
+            else [clip_duration] * len(scene_prompts)
+        )
 
         for i, (prompt, photo_url) in enumerate(zip(scene_prompts, anchor_photo_urls)):
             logger.info(f"Generating Seedance clip {i + 1}/{len(scene_prompts)}")
+            dur = durations[i] if i < len(durations) else durations[-1]
 
             clip_path = await self.generate_clip(
                 prompt=prompt,
                 image_url=photo_url,
-                duration=clip_duration,
+                duration=dur,
+                resolution=resolution,
                 model_id=model_id,
             )
             clips.append(clip_path)

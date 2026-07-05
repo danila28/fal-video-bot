@@ -268,20 +268,43 @@ async def _generate_seedance(
 
     if not is_t2v and valid_paths:
         uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
-
-        # I2V: one API call, model renders all scenes continuously (no FFmpeg concat needed)
         total_dur = sum(durations)
-        await notify(
-            f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s)"
-            + f", {total_dur}s total) — takes ~3-5 min…"
-        )
-        raw_video = await seedance.generate_multi_scene_clip(
-            scene_prompts=scenes,
-            image_url=uploaded_urls[0],
-            total_duration=total_dur,
-            resolution=resolution,
-            model_id=atlas_model_id,
-        )
+
+        if total_dur <= 15:
+            # Fits one Atlas call (hard 15s per-request limit) — render all
+            # scenes continuously in a single multi-scene request.
+            await notify(
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s)"
+                + f", {total_dur}s total) — takes ~3-5 min…"
+            )
+            raw_video = await seedance.generate_multi_scene_clip(
+                scene_prompts=scenes,
+                image_url=uploaded_urls[0],
+                total_duration=total_dur,
+                resolution=resolution,
+                model_id=atlas_model_id,
+            )
+        else:
+            # Longer than one call allows — clip-by-clip with last-frame
+            # stitching for continuity, then FFmpeg concat.
+            await notify(
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
+                + f", {total_dur}s total) — each clip takes ~3-5 min…"
+            )
+            n = len(uploaded_urls)
+            anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
+            clips = await seedance.generate_clips(
+                scene_prompts=scenes,
+                anchor_photo_urls=anchor_urls,
+                clip_duration=durations,
+                resolution=resolution,
+                model_id=atlas_model_id,
+            )
+            concat_transitions = transitions[:-1] if transitions else None
+            raw_video = (
+                await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
+                if len(clips) > 1 else clips[0]
+            )
     else:
         # No reference images — fallback to T2V or clip-by-clip I2V with last-frame stitching
         await notify(

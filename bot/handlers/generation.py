@@ -231,7 +231,7 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
 
         image_paths = await imagegen.generate_many(
             prompt=image_prompt,
-            model=settings.get("image_model") or "black-forest-labs/flux-2-pro/text-to-image",
+            model=settings.get("image_model") or "",  # empty → ImageGenService default
             video_model=video_model or "seedance",
             count=image_count,
             notify=callback.message.answer,
@@ -317,7 +317,7 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
         image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini)
         image_paths = await imagegen.generate_many(
             prompt=image_prompt,
-            model=settings.get("image_model") or "black-forest-labs/flux-2-pro/text-to-image",
+            model=settings.get("image_model") or "",  # empty → ImageGenService default
             video_model=settings.get("video_model") or "seedance",
             count=image_count,
             notify=callback.message.answer,

@@ -256,19 +256,25 @@ class KlingService:
             ],
             "sound": motion_has_audio,
         }
+        # Match the endpoint to the actual inputs: a T2V model errors when given
+        # an image (batches 2+ pass the previous batch's last frame even for
+        # kling_t2v), and an I2V model errors without one — swap to the same-tier
+        # sibling so the request is always valid.
         if image_reference_url:
+            model = model_id.replace("/text-to-video", "/image-to-video")
             params["image"] = image_reference_url
         else:
+            model = model_id.replace("/image-to-video", "/text-to-video")
             params["aspect_ratio"] = aspect_ratio
         if negative_prompt:
             params["negative_prompt"] = negative_prompt
 
         logger.info(
-            f"Kling multi-shot | model={model_id} | shots={len(scene_prompts)}"
+            f"Kling multi-shot | model={model} | shots={len(scene_prompts)}"
             f" | total={sum(effective_durs)}s"
             f" | ref={'yes' if image_reference_url else 'no'}"
         )
-        video_url = await self._atlas.generate_video(model_id, params)
+        video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
 
     async def _extract_last_frame(self, video_path: str) -> str:
