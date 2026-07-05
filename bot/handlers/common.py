@@ -692,7 +692,7 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
     shot_mode_str = "multi"
     shots_count_rule = f"shots array has EXACTLY {n_clips} elements"
     transition_rule  = "'cut' for action/pace/energy, 'dissolve' for mood shift/scene change, 'fade' for the FINAL shot ONLY"
-    scene_prompt_rule = "scene_prompt: English ONLY, describe VISUALS only — no camera directions here, no spoken text"
+    scene_prompt_rule = "scene_prompt: English ONLY, describe VISUALS only — no camera directions here, no spoken text. Max 55 words per shot"
     camera_motion_rule = "camera_motion: 3-8 words, camera movement for THIS shot only (e.g. 'slow push-in', 'pan left', 'static wide', 'crane up', 'orbit right')"
 
     _JSON_SYS = (

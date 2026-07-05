@@ -61,6 +61,24 @@ MODEL_LABELS: dict[str, str] = {
 # (same model IDs as normal generation, with multi_shot=True + multi_prompt=[...])
 MULTIFRAME_SETTINGS_KEYS: frozenset[str] = frozenset({"kling", "kling_v3_std", "kling_t2v"})
 
+# Atlas hard limit for each multi_prompt[].prompt entry (ret:1201 above it)
+_MULTI_PROMPT_MAX_CHARS = 512
+
+
+def _trim_shot_prompt(prompt: str, limit: int = _MULTI_PROMPT_MAX_CHARS) -> str:
+    """Trim a shot prompt to Atlas's per-entry limit, cutting at a word boundary."""
+    prompt = prompt.strip()
+    if len(prompt) <= limit:
+        return prompt
+    cut = prompt[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > limit // 2:
+        cut = cut[:last_space]
+    logger.warning(
+        f"Kling multi-shot prompt trimmed {len(prompt)} → {len(cut)} chars (Atlas 512 limit)"
+    )
+    return cut.rstrip(",.;:— ")
+
 
 class KlingService:
     def __init__(self, api_key: str, static_dir: str = ""):
@@ -225,13 +243,16 @@ class KlingService:
             if shot_durations and len(shot_durations) == len(scene_prompts)
             else [shot_duration] * len(scene_prompts)
         )
+        # Atlas rejects multi_prompt entries over 512 chars (ret:1201) — trim at
+        # a word boundary. The single-prompt limit (2500) doesn't apply here.
+        trimmed = [_trim_shot_prompt(p) for p in scene_prompts]
         params: dict = {
             "duration": sum(effective_durs),
             "multi_shot": True,
             "shot_type": "customize",
             "multi_prompt": [
                 {"index": i + 1, "prompt": p, "duration": effective_durs[i]}
-                for i, p in enumerate(scene_prompts)
+                for i, p in enumerate(trimmed)
             ],
             "sound": motion_has_audio,
         }
