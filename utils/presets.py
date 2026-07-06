@@ -51,10 +51,10 @@ DEFAULT_PRESET_KEY = "universal"
 
 STYLE_PRESETS: dict[str, dict] = {
     "universal": {
-        "label": "🎯 Универсальный",
+        "label": "🎯 Universal",
         "description": (
-            "Подходит для любой темы: живой сюжет с хуком в первые 2 секунды, "
-            "кинематографичная реалистичная картинка. Если не уверены — начните с него."
+            "Works for any topic: a lively story with a hook in the first 2 seconds, "
+            "cinematic realistic visuals. Start here if you're not sure."
         ),
         "plot": (
             "You are a scriptwriter and creative director for short vertical videos "
@@ -81,10 +81,10 @@ STYLE_PRESETS: dict[str, dict] = {
         ),
     },
     "humor": {
-        "label": "😂 Юмор / мемы",
+        "label": "😂 Humor / memes",
         "description": (
-            "Смешные и абсурдные ролики: неожиданный поворот, преувеличенные эмоции, "
-            "мемная энергия, панчлайн в конце. Яркая сочная картинка."
+            "Funny, absurd videos: unexpected twists, exaggerated emotions, "
+            "meme energy, a punchline at the end. Bright punchy visuals."
         ),
         "plot": (
             "You are a comedy writer for short vertical videos (Reels / TikTok / Shorts). "
@@ -113,10 +113,10 @@ STYLE_PRESETS: dict[str, dict] = {
         ),
     },
     "motivation": {
-        "label": "🔥 Мотивация",
+        "label": "🔥 Motivation",
         "description": (
-            "Вдохновляющие ролики: эпичные кадры, нарастающая интенсивность, "
-            "атмосфера преодоления. Драматичный кинематографичный свет."
+            "Inspiring videos: epic shots, rising intensity, an atmosphere of "
+            "overcoming struggle. Dramatic cinematic lighting."
         ),
         "plot": (
             "You are a director of motivational short vertical videos (Reels / TikTok / Shorts). "
@@ -145,11 +145,11 @@ STYLE_PRESETS: dict[str, dict] = {
         ),
     },
     "asmr": {
-        "label": "🌿 ASMR / эстетика",
+        "label": "🌿 ASMR / aesthetic",
         "description": (
-            "Медленные залипательные ролики: макро-детали, текстуры, "
-            "успокаивающий ритм. Мягкий свет, малая глубина резкости. "
-            "Озвучка — тихая и немногословная."
+            "Slow, mesmerizing videos: macro details, textures, "
+            "soothing pacing. Soft light, shallow depth of field. "
+            "Voiceover is quiet and sparse."
         ),
         "plot": (
             "You are a director of ASMR / aesthetic short vertical videos (Reels / TikTok / Shorts). "
@@ -185,10 +185,10 @@ STYLE_PRESETS: dict[str, dict] = {
         ),
     },
     "product": {
-        "label": "🛒 Обзор товара",
+        "label": "🛒 Product showcase",
         "description": (
-            "Продающие ролики о продукте: hero-кадры товара, выгоды через "
-            "действие, лайфстайл-контекст. Чистая коммерческая картинка."
+            "Selling videos about a product: hero shots, benefits shown through "
+            "action, lifestyle context. Clean commercial visuals."
         ),
         "plot": (
             "You are a director of product showcase short vertical videos (Reels / TikTok / Shorts). "
@@ -218,10 +218,10 @@ STYLE_PRESETS: dict[str, dict] = {
         ),
     },
     "story": {
-        "label": "📖 Сторителлинг",
+        "label": "📖 Storytelling",
         "description": (
-            "Мини-истории с сюжетом: герой, завязка, конфликт и развязка "
-            "с эмоциональным финалом. Атмосферная киношная картинка."
+            "Mini-stories with a plot: a protagonist, setup, conflict, and "
+            "an emotional resolution. Atmospheric cinematic visuals."
         ),
         "plot": (
             "You are a storyteller directing short vertical videos (Reels / TikTok / Shorts). "

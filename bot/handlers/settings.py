@@ -462,9 +462,9 @@ async def settings_plot_prompt(callback: CallbackQuery, state: FSMContext):
     db = container.inject(DBService)
     s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
     current = s.get("system_plot_prompt") or ""
-    text = "✏️ Пришлите новый текст промпта сюжета (идея → концепция):"
+    text = "✏️ Send the new plot prompt text (idea → concept):"
     if current:
-        text += f"\n\nТекущий:\n<code>{html.escape(current[:800])}</code>"
+        text += f"\n\nCurrent:\n<code>{html.escape(current[:800])}</code>"
     await callback.message.answer(text, parse_mode="HTML")
     await state.set_state(GenerationState.SET_SYSTEM_PLOT_PROMPT)
 
@@ -475,9 +475,9 @@ async def settings_image_prompt(callback: CallbackQuery, state: FSMContext):
     db = container.inject(DBService)
     s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
     current = s.get("system_image_prompt") or ""
-    text = "✏️ Пришлите новый текст промпта фото (концепция → кадр):"
+    text = "✏️ Send the new image prompt text (concept → frame):"
     if current:
-        text += f"\n\nТекущий:\n<code>{html.escape(current[:800])}</code>"
+        text += f"\n\nCurrent:\n<code>{html.escape(current[:800])}</code>"
     await callback.message.answer(text, parse_mode="HTML")
     await state.set_state(GenerationState.SET_SYSTEM_IMAGE_PROMPT)
 
@@ -492,32 +492,32 @@ async def _show_style_menu(callback: CallbackQuery):
     current = s.get("content_preset") or ""
     is_t2v = (s.get("video_model") or "") in _T2V_VIDEO_MODELS
 
-    lines = ["🎨 <b>Стиль контента</b>\n"]
+    lines = ["🎨 <b>Content style</b>\n"]
     lines.append(
-        "Выберите нишу — она настроит и сюжет, и картинку согласованно. "
-        "Что получится в каждой:\n"
+        "Pick a niche — it sets the plot and image style together, consistently. "
+        "What you get with each:\n"
     )
     for key, p in STYLE_PRESETS.items():
         mark = " ✅" if key == current else ""
         lines.append(f"{p['label']}{mark}\n<i>{p['description']}</i>\n")
     lines.append(
-        "✍️ <b>Своя ниша</b> — опишите свою тематику парой предложений, "
-        "ИИ один раз соберёт стиль под неё и сохранит.\n"
+        "✍️ <b>Custom niche</b> — describe your topic in a sentence or two, "
+        "the AI will build a style for it once and save it.\n"
     )
     if not current:
         if s.get("system_plot_prompt") or s.get("system_image_prompt"):
             # Legacy user: prompts saved before presets existed
-            lines.append("<i>Сейчас: ✏️ ваши сохранённые ранее промпты (ручная настройка).</i>")
+            lines.append("<i>Currently: ✏️ your previously saved prompts (manual setup).</i>")
         else:
-            lines.append("<i>Сейчас ничего не выбрано — работает 🎯 Универсальный по умолчанию.</i>")
+            lines.append("<i>Nothing selected yet — 🎯 Universal is used by default.</i>")
     elif current == "manual":
-        lines.append("<i>Сейчас: ✏️ ручная настройка промптов.</i>")
+        lines.append("<i>Currently: ✏️ manual prompt setup.</i>")
     elif current == "custom":
-        lines.append("<i>Сейчас: ✍️ своя ниша (сгенерирована ИИ и сохранена).</i>")
+        lines.append("<i>Currently: ✍️ custom niche (AI-generated and saved).</i>")
     if is_t2v:
         lines.append(
-            "\n<i>ℹ️ У вас выбрана text-to-video модель — этап фото пропускается, "
-            "промпт фото не используется.</i>"
+            "\n<i>ℹ️ You have a text-to-video model selected — the photo stage is "
+            "skipped, the image prompt is unused.</i>"
         )
 
     kb = get_style_keyboard(STYLE_PRESETS, current_key=current, is_t2v=is_t2v)
@@ -554,9 +554,9 @@ async def handle_style_selected(callback: CallbackQuery):
         },
     )
     await callback.message.answer(
-        f"✅ Стиль применён: <b>{preset['label']}</b>\n<i>{preset['description']}</i>\n\n"
-        "Сюжет и картинка теперь настроены под эту нишу. "
-        "При желании тексты можно подправить кнопками «✏️» в меню стиля.",
+        f"✅ Style applied: <b>{preset['label']}</b>\n<i>{preset['description']}</i>\n\n"
+        "The plot and image styles are now tuned for this niche. "
+        "You can still hand-edit the texts with the «✏️» buttons in the style menu.",
         parse_mode="HTML",
     )
     await _show_style_menu(callback)
@@ -566,11 +566,11 @@ async def handle_style_selected(callback: CallbackQuery):
 async def handle_style_custom(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.answer(
-        "✍️ Опишите вашу нишу/стиль в 1-3 предложениях.\n\n"
-        "Например: <i>реставрация винтажных часов, спокойный экспертный тон, "
-        "эстетика мастерской</i>\n\n"
-        "ИИ один раз соберёт под неё стиль сюжета и картинки и сохранит — "
-        "дальше он будет использоваться как есть, без перегенерации.",
+        "✍️ Describe your niche/style in 1-3 sentences.\n\n"
+        "Example: <i>vintage watch restoration, calm expert tone, "
+        "workshop aesthetic</i>\n\n"
+        "The AI will build a plot + image style for it once and save it — "
+        "after that it's used as-is, no regeneration.",
         parse_mode="HTML",
     )
     await state.set_state(GenerationState.SET_CUSTOM_NICHE)
@@ -580,9 +580,9 @@ async def handle_style_custom(callback: CallbackQuery, state: FSMContext):
 async def handle_custom_niche_input(message: Message, state: FSMContext):
     niche = (message.text or "").strip()
     if len(niche) < 5:
-        await message.answer("❌ Слишком коротко — опишите нишу хотя бы парой слов.")
+        await message.answer("❌ Too short — describe the niche in at least a few words.")
         return
-    await message.answer("⏳ Собираю стиль под вашу нишу…")
+    await message.answer("⏳ Building a style for your niche…")
     try:
         gemini = container.inject(GeminiService)
         db = container.inject(DBService)
@@ -593,8 +593,8 @@ async def handle_custom_niche_input(message: Message, state: FSMContext):
         parsed = parse_custom_niche_json(raw)
         if parsed is None:
             await message.answer(
-                "❌ Не удалось собрать стиль (ИИ вернул неожиданный формат). "
-                "Попробуйте ещё раз или переформулируйте описание."
+                "❌ Couldn't build a style (the AI returned an unexpected format). "
+                "Try again or rephrase the description."
             )
             return
         plot, image = parsed
@@ -609,17 +609,17 @@ async def handle_custom_niche_input(message: Message, state: FSMContext):
             },
         )
         await message.answer(
-            "✅ Стиль под вашу нишу сохранён!\n\n"
-            f"<b>Сюжет:</b>\n<code>{html.escape(plot[:600])}</code>\n\n"
-            f"<b>Картинка:</b>\n<code>{html.escape(image[:600])}</code>\n\n"
-            "Он сохранён как обычный текст и будет использоваться для всех "
-            "следующих роликов. Подправить можно кнопками «✏️» в меню стиля.",
+            "✅ Style for your niche saved!\n\n"
+            f"<b>Plot:</b>\n<code>{html.escape(plot[:600])}</code>\n\n"
+            f"<b>Image:</b>\n<code>{html.escape(image[:600])}</code>\n\n"
+            "It's saved as plain text and will be used for all future videos. "
+            "You can adjust it with the «✏️» buttons in the style menu.",
             parse_mode="HTML",
         )
         await state.clear()
     except Exception as e:
         logger.error(f"Custom niche generation failed: {e}")
-        await message.answer(f"❌ Ошибка: {e}\nПопробуйте ещё раз.")
+        await message.answer(f"❌ Error: {e}\nTry again.")
 
 
 @router.callback_query(lambda c: c.data == "settings:accounts", IsAllowed(allowed_users))
@@ -780,7 +780,7 @@ async def handle_set_image_prompt(message: Message, state: FSMContext):
         message.from_user.id, message.chat.id,
         {"system_image_prompt": message.text, "content_preset": "manual"},
     )
-    await message.answer("✅ Промпт фото сохранён (стиль: ручная настройка).")
+    await message.answer("✅ Image prompt saved (style: manual setup).")
     await state.clear()
 
 
@@ -792,7 +792,7 @@ async def handle_set_plot_prompt(message: Message, state: FSMContext):
         message.from_user.id, message.chat.id,
         {"system_plot_prompt": message.text, "content_preset": "manual"},
     )
-    await message.answer("✅ Промпт сюжета сохранён (стиль: ручная настройка).")
+    await message.answer("✅ Plot prompt saved (style: manual setup).")
     await state.clear()
 
 

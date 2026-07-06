@@ -52,6 +52,6 @@ _REQUIRED = [
 _missing = [k for k in _REQUIRED if not config.get(k)]
 if _missing:
     raise RuntimeError(
-        f"Отсутствуют обязательные переменные окружения: {', '.join(_missing)}\n"
-        "Проверь .env файл."
+        f"Missing required environment variables: {', '.join(_missing)}\n"
+        "Check your .env file."
     )

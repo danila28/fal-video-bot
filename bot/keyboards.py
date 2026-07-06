@@ -159,7 +159,7 @@ def get_settings_keyboard(is_t2v: bool = False):
                 InlineKeyboardButton(text="🎬 Video model", callback_data="settings:video_model"),
             ],
             [
-                InlineKeyboardButton(text="🎨 Стиль контента", callback_data="settings:style"),
+                InlineKeyboardButton(text="🎨 Content style", callback_data="settings:style"),
             ],
             [
                 InlineKeyboardButton(text="⚙️ More settings", callback_data="settings:advanced"),
@@ -179,12 +179,12 @@ def get_style_keyboard(presets: dict, current_key: str = "", is_t2v: bool = Fals
         )])
     custom_mark = "✅ " if current_key == "custom" else ""
     rows.append([InlineKeyboardButton(
-        text=f"{custom_mark}✍️ Своя ниша (опишу словами)", callback_data="style:custom"
+        text=f"{custom_mark}✍️ Custom niche (describe it)", callback_data="style:custom"
     )])
-    edit_row = [InlineKeyboardButton(text="✏️ Промпт сюжета", callback_data="settings:plot_prompt")]
+    edit_row = [InlineKeyboardButton(text="✏️ Plot prompt", callback_data="settings:plot_prompt")]
     # For T2V models the reference image stage is skipped — hide its editor.
     if not is_t2v:
-        edit_row.append(InlineKeyboardButton(text="✏️ Промпт фото", callback_data="settings:image_prompt"))
+        edit_row.append(InlineKeyboardButton(text="✏️ Image prompt", callback_data="settings:image_prompt"))
     rows.append(edit_row)
     rows.append([InlineKeyboardButton(text="← Back", callback_data="settings:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
