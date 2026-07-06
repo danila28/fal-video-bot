@@ -31,6 +31,7 @@ from services.imagegen import ImageGenService
 from services.kling import KlingService
 from utils import container
 from utils.consts import allowed_users, generate_hashtags_prompt
+from utils.presets import DEFAULT_PLOT_PROMPT
 from utils.tg import send_long_message
 from bot.handlers.common import (
     DEFAULT_TARGET_DURATION,
@@ -79,25 +80,9 @@ async def _begin_generation(message: Message, state: FSMContext):
         return
 
     db = container.inject(DBService)
-    settings = await db.get_settings(message.from_user.id, message.chat.id)
 
-    if settings.get("text_model") is None:
-        await message.answer("You must select a LLM to generate prompts\nTap ⚙️ Settings → 🧠 Text model")
-        return
-    video_model_check = settings.get("video_model") or ""
-    if settings.get("image_model") is None and video_model_check not in _T2V_VIDEO_MODELS:
-        await message.answer("You must select an image model\nTap ⚙️ Settings → 🖼 Image model")
-        return
-    if settings.get("video_model") is None:
-        await message.answer("You must select a video model\nTap ⚙️ Settings → 🎬 Video model")
-        return
-    if settings.get("system_plot_prompt") is None:
-        await message.answer("A system prompt must be set for idea/plot\nTap ⚙️ Settings → 📝 Plot prompt")
-        return
-    if settings.get("system_image_prompt") is None and video_model_check not in _T2V_VIDEO_MODELS:
-        await message.answer("A system prompt must be set for image\nTap ⚙️ Settings → 🖼 Image prompt")
-        return
-
+    # Models and style prompts all have working built-in defaults — the bot
+    # generates out of the box with zero setup. Only publish accounts are required.
     chat_accounts = await db.get_chat_accounts(message.chat.id)
     if not chat_accounts:
         await message.answer("No accounts configured for this chat\nTap ⚙️ Settings → 📤 Accounts")
@@ -133,7 +118,7 @@ async def handle_raw_prompt(message: Message, state: FSMContext):
         db = container.inject(DBService)
         settings = await db.get_settings(message.from_user.id, message.chat.id)
         system_prompt = _substitute_prompt_vars(
-            settings.get("system_plot_prompt") or "",
+            settings.get("system_plot_prompt") or DEFAULT_PLOT_PROMPT,
             settings
         )
         enhance_prompt = await gemini.generate_text(
@@ -262,7 +247,7 @@ async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         raw_prompt = data.get("raw_prompt", "")
         system_prompt = _substitute_prompt_vars(
-            settings.get("system_plot_prompt") or "",
+            settings.get("system_plot_prompt") or DEFAULT_PLOT_PROMPT,
             settings
         )
         enhance_prompt = await gemini.generate_text(

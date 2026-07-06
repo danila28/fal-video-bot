@@ -13,7 +13,7 @@ class GenerationState(StatesGroup):
 
     SET_SYSTEM_IMAGE_PROMPT = State()
     SET_SYSTEM_PLOT_PROMPT = State()
-    SET_SYSTEM_VIDEO_GENERATION_PROMPT = State()
+    SET_CUSTOM_NICHE = State()
     ADD_CHAT_ACCOUNT = State()
     SET_NEGATIVE_PROMPT = State()
     SET_GRADE_PARAMS = State()

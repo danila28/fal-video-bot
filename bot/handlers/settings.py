@@ -21,6 +21,7 @@ from bot.keyboards import (
     get_resolution_keyboard,
     get_settings_keyboard,
     get_speed_keyboard,
+    get_style_keyboard,
     SETTINGS_BUTTON_TEXT,
 )
 from bot.states import GenerationState
@@ -28,7 +29,17 @@ from services.db import DBService
 from services.gemini import GeminiService
 from utils import container
 from utils.consts import allowed_users
-from bot.handlers.common import DEFAULT_TARGET_DURATION, DURATION_SEGMENTS
+from utils.presets import (
+    CUSTOM_NICHE_META_PROMPT,
+    DEFAULT_PRESET_KEY,
+    STYLE_PRESETS,
+    parse_custom_niche_json,
+)
+from bot.handlers.common import (
+    DEFAULT_TARGET_DURATION,
+    DURATION_SEGMENTS,
+    _T2V_VIDEO_MODELS,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -38,19 +49,27 @@ logger = logging.getLogger(__name__)
 # SETTINGS ENTRY
 # ─────────────────────────────────────────────
 
+async def _is_t2v_selected(user_id: int, chat_id: int) -> bool:
+    db = container.inject(DBService)
+    s = await db.get_settings(user_id, chat_id)
+    return (s.get("video_model") or "") in _T2V_VIDEO_MODELS
+
+
 @router.message(F.text == SETTINGS_BUTTON_TEXT, IsAllowed(allowed_users))
 async def handle_settings_button(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("⚙️ Settings", reply_markup=get_settings_keyboard())
+    is_t2v = await _is_t2v_selected(message.from_user.id, message.chat.id)
+    await message.answer("⚙️ Settings", reply_markup=get_settings_keyboard(is_t2v))
 
 
 @router.callback_query(lambda c: c.data == "settings:back", IsAllowed(allowed_users))
 async def settings_back(callback: CallbackQuery):
     await callback.answer()
+    is_t2v = await _is_t2v_selected(callback.from_user.id, callback.message.chat.id)
     try:
-        await callback.message.edit_text("⚙️ Settings", reply_markup=get_settings_keyboard())
+        await callback.message.edit_text("⚙️ Settings", reply_markup=get_settings_keyboard(is_t2v))
     except Exception:
-        await callback.message.answer("⚙️ Settings", reply_markup=get_settings_keyboard())
+        await callback.message.answer("⚙️ Settings", reply_markup=get_settings_keyboard(is_t2v))
 
 
 @router.callback_query(lambda c: c.data == "settings:advanced", IsAllowed(allowed_users))
@@ -440,22 +459,162 @@ async def settings_video_model(callback: CallbackQuery):
 @router.callback_query(lambda c: c.data == "settings:plot_prompt", IsAllowed(allowed_users))
 async def settings_plot_prompt(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    await callback.message.answer("Send new system prompt for idea → scene:")
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    current = s.get("system_plot_prompt") or ""
+    text = "✏️ Пришлите новый текст промпта сюжета (идея → концепция):"
+    if current:
+        text += f"\n\nТекущий:\n<code>{html.escape(current[:800])}</code>"
+    await callback.message.answer(text, parse_mode="HTML")
     await state.set_state(GenerationState.SET_SYSTEM_PLOT_PROMPT)
 
 
 @router.callback_query(lambda c: c.data == "settings:image_prompt", IsAllowed(allowed_users))
 async def settings_image_prompt(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    await callback.message.answer("Send new system prompt for scene → image:")
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    current = s.get("system_image_prompt") or ""
+    text = "✏️ Пришлите новый текст промпта фото (концепция → кадр):"
+    if current:
+        text += f"\n\nТекущий:\n<code>{html.escape(current[:800])}</code>"
+    await callback.message.answer(text, parse_mode="HTML")
     await state.set_state(GenerationState.SET_SYSTEM_IMAGE_PROMPT)
 
 
-@router.callback_query(lambda c: c.data == "settings:video_prompt", IsAllowed(allowed_users))
-async def settings_video_prompt(callback: CallbackQuery, state: FSMContext):
+# ─────────────────────────────────────────────
+# CONTENT STYLE (niche presets + one-shot AI custom niche)
+# ─────────────────────────────────────────────
+
+async def _show_style_menu(callback: CallbackQuery):
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    current = s.get("content_preset") or ""
+    is_t2v = (s.get("video_model") or "") in _T2V_VIDEO_MODELS
+
+    lines = ["🎨 <b>Стиль контента</b>\n"]
+    lines.append(
+        "Выберите нишу — она настроит и сюжет, и картинку согласованно. "
+        "Что получится в каждой:\n"
+    )
+    for key, p in STYLE_PRESETS.items():
+        mark = " ✅" if key == current else ""
+        lines.append(f"{p['label']}{mark}\n<i>{p['description']}</i>\n")
+    lines.append(
+        "✍️ <b>Своя ниша</b> — опишите свою тематику парой предложений, "
+        "ИИ один раз соберёт стиль под неё и сохранит.\n"
+    )
+    if not current:
+        if s.get("system_plot_prompt") or s.get("system_image_prompt"):
+            # Legacy user: prompts saved before presets existed
+            lines.append("<i>Сейчас: ✏️ ваши сохранённые ранее промпты (ручная настройка).</i>")
+        else:
+            lines.append("<i>Сейчас ничего не выбрано — работает 🎯 Универсальный по умолчанию.</i>")
+    elif current == "manual":
+        lines.append("<i>Сейчас: ✏️ ручная настройка промптов.</i>")
+    elif current == "custom":
+        lines.append("<i>Сейчас: ✍️ своя ниша (сгенерирована ИИ и сохранена).</i>")
+    if is_t2v:
+        lines.append(
+            "\n<i>ℹ️ У вас выбрана text-to-video модель — этап фото пропускается, "
+            "промпт фото не используется.</i>"
+        )
+
+    kb = get_style_keyboard(STYLE_PRESETS, current_key=current, is_t2v=is_t2v)
+    try:
+        await callback.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await callback.message.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(lambda c: c.data == "settings:style", IsAllowed(allowed_users))
+async def settings_style(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.answer("Send new system prompt for scene → video:")
-    await state.set_state(GenerationState.SET_SYSTEM_VIDEO_GENERATION_PROMPT)
+    await _show_style_menu(callback)
+
+
+@router.callback_query(lambda c: c.data.startswith("style:set:"), IsAllowed(allowed_users))
+async def handle_style_selected(callback: CallbackQuery):
+    key = callback.data.split(":")[-1]
+    preset = STYLE_PRESETS.get(key)
+    if preset is None:
+        await callback.answer("Unknown preset", show_alert=True)
+        return
+    await callback.answer()
+    db = container.inject(DBService)
+    await db.update_settings(
+        callback.from_user.id, callback.message.chat.id,
+        {
+            "content_preset": key,
+            "system_plot_prompt": preset["plot"],
+            "system_image_prompt": preset["image"],
+        },
+    )
+    await callback.message.answer(
+        f"✅ Стиль применён: <b>{preset['label']}</b>\n<i>{preset['description']}</i>\n\n"
+        "Сюжет и картинка теперь настроены под эту нишу. "
+        "При желании тексты можно подправить кнопками «✏️» в меню стиля.",
+        parse_mode="HTML",
+    )
+    await _show_style_menu(callback)
+
+
+@router.callback_query(lambda c: c.data == "style:custom", IsAllowed(allowed_users))
+async def handle_style_custom(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer(
+        "✍️ Опишите вашу нишу/стиль в 1-3 предложениях.\n\n"
+        "Например: <i>реставрация винтажных часов, спокойный экспертный тон, "
+        "эстетика мастерской</i>\n\n"
+        "ИИ один раз соберёт под неё стиль сюжета и картинки и сохранит — "
+        "дальше он будет использоваться как есть, без перегенерации.",
+        parse_mode="HTML",
+    )
+    await state.set_state(GenerationState.SET_CUSTOM_NICHE)
+
+
+@router.message(GenerationState.SET_CUSTOM_NICHE, IsAllowed(allowed_users))
+async def handle_custom_niche_input(message: Message, state: FSMContext):
+    niche = (message.text or "").strip()
+    if len(niche) < 5:
+        await message.answer("❌ Слишком коротко — опишите нишу хотя бы парой слов.")
+        return
+    await message.answer("⏳ Собираю стиль под вашу нишу…")
+    try:
+        gemini = container.inject(GeminiService)
+        db = container.inject(DBService)
+        settings = await db.get_settings(message.from_user.id, message.chat.id)
+        raw = await gemini.generate_text(
+            niche, CUSTOM_NICHE_META_PROMPT, settings.get("text_model") or ""
+        )
+        parsed = parse_custom_niche_json(raw)
+        if parsed is None:
+            await message.answer(
+                "❌ Не удалось собрать стиль (ИИ вернул неожиданный формат). "
+                "Попробуйте ещё раз или переформулируйте описание."
+            )
+            return
+        plot, image = parsed
+        await db.update_settings(
+            message.from_user.id, message.chat.id,
+            {
+                "content_preset": "custom",
+                "system_plot_prompt": plot,
+                "system_image_prompt": image,
+            },
+        )
+        await message.answer(
+            "✅ Стиль под вашу нишу сохранён!\n\n"
+            f"<b>Сюжет:</b>\n<code>{html.escape(plot[:600])}</code>\n\n"
+            f"<b>Картинка:</b>\n<code>{html.escape(image[:600])}</code>\n\n"
+            "Он сохранён как обычный текст и будет использоваться для всех "
+            "следующих роликов. Подправить можно кнопками «✏️» в меню стиля.",
+            parse_mode="HTML",
+        )
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Custom niche generation failed: {e}")
+        await message.answer(f"❌ Ошибка: {e}\nПопробуйте ещё раз.")
 
 
 @router.callback_query(lambda c: c.data == "settings:accounts", IsAllowed(allowed_users))
@@ -611,24 +770,24 @@ async def handle_video_model_selected(callback: CallbackQuery):
 @router.message(GenerationState.SET_SYSTEM_IMAGE_PROMPT, IsAllowed(allowed_users))
 async def handle_set_image_prompt(message: Message, state: FSMContext):
     db = container.inject(DBService)
-    await db.update_settings(message.from_user.id, message.chat.id, {"system_image_prompt": message.text})
-    await message.answer("✅ System prompt for image saved.")
+    # Manual edit detaches the saved text from any named preset
+    await db.update_settings(
+        message.from_user.id, message.chat.id,
+        {"system_image_prompt": message.text, "content_preset": "manual"},
+    )
+    await message.answer("✅ Промпт фото сохранён (стиль: ручная настройка).")
     await state.clear()
 
 
 @router.message(GenerationState.SET_SYSTEM_PLOT_PROMPT, IsAllowed(allowed_users))
 async def handle_set_plot_prompt(message: Message, state: FSMContext):
     db = container.inject(DBService)
-    await db.update_settings(message.from_user.id, message.chat.id, {"system_plot_prompt": message.text})
-    await message.answer("✅ System prompt for plot/scene saved.")
-    await state.clear()
-
-
-@router.message(GenerationState.SET_SYSTEM_VIDEO_GENERATION_PROMPT, IsAllowed(allowed_users))
-async def handle_set_video_gen_prompt(message: Message, state: FSMContext):
-    db = container.inject(DBService)
-    await db.update_settings(message.from_user.id, message.chat.id, {"system_video_prompt": message.text})
-    await message.answer("✅ System prompt for video generation saved.")
+    # Manual edit detaches the saved text from any named preset
+    await db.update_settings(
+        message.from_user.id, message.chat.id,
+        {"system_plot_prompt": message.text, "content_preset": "manual"},
+    )
+    await message.answer("✅ Промпт сюжета сохранён (стиль: ручная настройка).")
     await state.clear()
 
 

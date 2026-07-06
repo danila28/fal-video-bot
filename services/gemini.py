@@ -91,6 +91,9 @@ class GeminiService:
     async def generate_text(
         self, prompt: str, system_prompt: str = "", model: str = "gemini-3.1-flash-lite"
     ) -> str:
+        # Callers pass settings.get("text_model") or "" — treat empty as default
+        # so the bot works out of the box without any configuration.
+        model = model or "gemini-3.1-flash-lite"
         try:
             contents = [
                 types.Content(role="user", parts=[types.Part(text=prompt)]),

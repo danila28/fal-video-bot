@@ -43,7 +43,11 @@ DEFAULT_TARGET_DURATION = 30
 
 
 def _substitute_prompt_vars(prompt: str, settings: dict) -> str:
-    """Substitute {DURATION}, {NUM_SCENES}, {SCENE_DURATION} from settings."""
+    """Substitute {DURATION}, {NUM_SCENES}, {SCENE_DURATION} from settings.
+
+    Uses str.replace (not str.format) so arbitrary braces in user-entered or
+    AI-generated prompt text can never crash the pipeline.
+    """
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
 
@@ -54,10 +58,10 @@ def _substitute_prompt_vars(prompt: str, settings: dict) -> str:
     num_scenes = max(1, math.ceil(target_duration / clip_duration))
     scene_duration = target_duration // num_scenes if num_scenes > 0 else clip_duration
 
-    return prompt.format(
-        DURATION=target_duration,
-        NUM_SCENES=num_scenes,
-        SCENE_DURATION=scene_duration,
+    return (
+        prompt.replace("{DURATION}", str(target_duration))
+        .replace("{NUM_SCENES}", str(num_scenes))
+        .replace("{SCENE_DURATION}", str(scene_duration))
     )
 
 
@@ -825,10 +829,14 @@ async def _build_image_prompt(
     settings: dict,
     gemini: GeminiService,
 ) -> str:
-    base_sys = settings.get("system_image_prompt") or ""
+    from utils.presets import DEFAULT_IMAGE_PROMPT, IMAGE_SYS_SUFFIX
+    # User/preset text sets the style; the hard output requirements (single
+    # frame, English, 9:16, no text/watermarks) are always enforced in code —
+    # same pattern as _JSON_SYS for the video script.
+    base_sys = settings.get("system_image_prompt") or DEFAULT_IMAGE_PROMPT
     return await gemini.generate_text(
         enhance_prompt,
-        base_sys,
+        base_sys + IMAGE_SYS_SUFFIX,
         settings.get("text_model") or "",
     )
 

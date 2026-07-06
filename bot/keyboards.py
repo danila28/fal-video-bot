@@ -146,29 +146,48 @@ def get_speed_keyboard(current: float = 1.0):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_settings_keyboard():
-    """Main settings page — model selection and system prompts."""
+def get_settings_keyboard(is_t2v: bool = False):
+    """Main settings page — model selection and content style."""
+    model_row = [InlineKeyboardButton(text="🧠 Text model", callback_data="settings:text_model")]
+    # T2V models generate straight from text — the image model is unused, hide it.
+    if not is_t2v:
+        model_row.append(InlineKeyboardButton(text="🖼 Image model", callback_data="settings:image_model"))
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🧠 Text model",  callback_data="settings:text_model"),
-                InlineKeyboardButton(text="🖼 Image model", callback_data="settings:image_model"),
-            ],
+            model_row,
             [
                 InlineKeyboardButton(text="🎬 Video model", callback_data="settings:video_model"),
             ],
             [
-                InlineKeyboardButton(text="📝 Plot prompt",  callback_data="settings:plot_prompt"),
-                InlineKeyboardButton(text="🖼 Image prompt", callback_data="settings:image_prompt"),
-            ],
-            [
-                InlineKeyboardButton(text="🎬 Video prompt", callback_data="settings:video_prompt"),
+                InlineKeyboardButton(text="🎨 Стиль контента", callback_data="settings:style"),
             ],
             [
                 InlineKeyboardButton(text="⚙️ More settings", callback_data="settings:advanced"),
             ],
         ]
     )
+
+
+def get_style_keyboard(presets: dict, current_key: str = "", is_t2v: bool = False):
+    """Content-style menu: built-in niche presets + one-shot AI custom niche
+    + manual editing of the underlying prompts."""
+    rows = []
+    for key, p in presets.items():
+        mark = "✅ " if key == current_key else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{p['label']}", callback_data=f"style:set:{key}"
+        )])
+    custom_mark = "✅ " if current_key == "custom" else ""
+    rows.append([InlineKeyboardButton(
+        text=f"{custom_mark}✍️ Своя ниша (опишу словами)", callback_data="style:custom"
+    )])
+    edit_row = [InlineKeyboardButton(text="✏️ Промпт сюжета", callback_data="settings:plot_prompt")]
+    # For T2V models the reference image stage is skipped — hide its editor.
+    if not is_t2v:
+        edit_row.append(InlineKeyboardButton(text="✏️ Промпт фото", callback_data="settings:image_prompt"))
+    rows.append(edit_row)
+    rows.append([InlineKeyboardButton(text="← Back", callback_data="settings:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_advanced_settings_keyboard(
