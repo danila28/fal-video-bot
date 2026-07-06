@@ -548,6 +548,9 @@ async def handle_style_selected(callback: CallbackQuery):
             "content_preset": key,
             "system_plot_prompt": preset["plot"],
             "system_image_prompt": preset["image"],
+            # Optional per-niche voiceover/style override (e.g. ASMR whisper).
+            # Always written — switching presets must clear the previous one.
+            "system_video_prompt": preset.get("video", ""),
         },
     )
     await callback.message.answer(
@@ -601,6 +604,8 @@ async def handle_custom_niche_input(message: Message, state: FSMContext):
                 "content_preset": "custom",
                 "system_plot_prompt": plot,
                 "system_image_prompt": image,
+                # Clear any per-niche voiceover override left by a previous preset
+                "system_video_prompt": "",
             },
         )
         await message.answer(

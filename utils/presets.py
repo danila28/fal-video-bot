@@ -37,6 +37,14 @@ _PLOT_COMMON_RULES = (
     "- The final video is {DURATION} seconds long — scale the number of beats accordingly."
 )
 
+# Few-shot examples below are written in English purely as illustration.
+# This guard keeps the model answering in the idea's language regardless.
+_EXAMPLE_GUARD = (
+    "\n\nThe example below is in English ONLY for illustration. "
+    "Copy its structure, pacing and level of concrete detail — "
+    "but ALWAYS answer in the language of the user's idea:\n"
+)
+
 # ── Presets ──────────────────────────────────────────────────────────────────
 
 DEFAULT_PRESET_KEY = "universal"
@@ -53,6 +61,18 @@ STYLE_PRESETS: dict[str, dict] = {
             "(Reels / TikTok / Shorts). The user sends a raw video idea. Expand it into "
             "one vivid, concrete, filmable video concept that would stop a viewer from scrolling."
             + _PLOT_COMMON_RULES
+            + "\n\nAvoid: slow build-ups before the hook, static poses, abstract claims "
+            "('the best', 'amazing'), describing feelings instead of showing them through "
+            "action, generic stock-footage moments, clichéd openings like 'in a world where'."
+            + _EXAMPLE_GUARD
+            + "Idea: \"a robot learns to cook\"\n"
+            "Concept: \"A kitchen robot with dented chrome plating cracks an egg with "
+            "surgical precision — straight onto the counter, missing the pan entirely. "
+            "It tilts its camera-head at the yolk, processing the failure, then grabs "
+            "three more eggs at once. Flour explodes across the kitchen as it whisks at "
+            "motor-maximum speed, dough splattering the windows. Finally it presents a "
+            "single, perfect golden pancake on a plate — while the kitchen behind it "
+            "looks like a war zone, smoke drifting past its proudly blinking LED eyes.\""
         ),
         "image": (
             "You write prompts for an AI image generator. From the video concept you receive, "
@@ -70,8 +90,20 @@ STYLE_PRESETS: dict[str, dict] = {
             "You are a comedy writer for short vertical videos (Reels / TikTok / Shorts). "
             "The user sends a raw idea. Turn it into a funny, meme-worthy mini-sketch: "
             "an absurd or unexpected twist on the idea, exaggerated reactions and physical comedy, "
-            "escalating silliness, and a clear visual punchline as the final beat."
+            "escalating silliness, and a clear visual punchline that MUST land in the final beat."
             + _PLOT_COMMON_RULES
+            + "\n\nAvoid: explaining the joke, polite mild humor without exaggeration, "
+            "static talking heads, saving nothing for the ending, feelings described in "
+            "words instead of shown through over-the-top physical reactions."
+            + _EXAMPLE_GUARD
+            + "Idea: \"cat doesn't want to take a bath\"\n"
+            "Concept: \"A fluffy orange cat sits on the bathtub edge, staring down at the "
+            "water like it's lava. The owner's hands reach in — the cat flattens its ears "
+            "and death-grips the towel rail with all four paws, stretching like rubber as "
+            "it's pulled. In dramatic slow motion the cat is lowered toward the water, pure "
+            "betrayal in its huge eyes. Final beat: the soaked cat sits in two centimeters "
+            "of water, one paw pressed to its face like it's been personally wronged by "
+            "the entire universe.\""
         ),
         "image": (
             "You write prompts for an AI image generator. From the video concept you receive, "
@@ -93,6 +125,17 @@ STYLE_PRESETS: dict[str, dict] = {
             "effort, obstacles, breakthrough), and end on a triumphant, aspirational image. "
             "Epic, cinematic, larger-than-life visuals."
             + _PLOT_COMMON_RULES
+            + "\n\nAvoid: empty slogans without imagery, gym clichés with no story arc, "
+            "flat energy from start to finish (intensity must RISE), stock-photo smiling "
+            "people, abstract success talk instead of visible effort and sweat."
+            + _EXAMPLE_GUARD
+            + "Idea: \"morning run\"\n"
+            "Concept: \"An alarm glows 4:58 AM in a dark room; a hand silences it before "
+            "it even rings. A runner laces worn shoes by the door, breath visible in the "
+            "cold hallway air. She pounds up an endless stadium staircase in pouring rain, "
+            "each step heavier, legs shaking, fists clenched — then breaks through onto "
+            "the rooftop level just as the sun explodes over the city skyline, standing "
+            "tall, chest heaving, silhouetted in golden light.\""
         ),
         "image": (
             "You write prompts for an AI image generator. From the video concept you receive, "
@@ -105,7 +148,8 @@ STYLE_PRESETS: dict[str, dict] = {
         "label": "🌿 ASMR / эстетика",
         "description": (
             "Медленные залипательные ролики: макро-детали, текстуры, "
-            "успокаивающий ритм. Мягкий свет, малая глубина резкости."
+            "успокаивающий ритм. Мягкий свет, малая глубина резкости. "
+            "Озвучка — тихая и немногословная."
         ),
         "plot": (
             "You are a director of ASMR / aesthetic short vertical videos (Reels / TikTok / Shorts). "
@@ -114,12 +158,30 @@ STYLE_PRESETS: dict[str, dict] = {
             "satisfying moments (slicing, pouring, peeling, arranging), calm meditative pacing. "
             "No rush, no drama — pure sensory pleasure."
             + _PLOT_COMMON_RULES
+            + "\n\nAvoid: fast cuts and rushed pacing, wide busy shots (stay CLOSE), drama or "
+            "conflict, cluttered backgrounds, loud energetic tone — this genre is quiet, "
+            "precise and hypnotic."
+            + _EXAMPLE_GUARD
+            + "Idea: \"cutting soap\"\n"
+            "Concept: \"A pristine bar of lavender soap rests on white marble, side-lit so "
+            "every wax-smooth facet glows. A knife blade sinks into the edge in extreme "
+            "close-up and a first curl peels away with agonizing slowness. Row after row "
+            "of perfect ribbons drop softly onto the marble, each one catching the light. "
+            "The final shot drifts across the finished pile of curls — orderly, soft, "
+            "impossibly satisfying.\""
         ),
         "image": (
             "You write prompts for an AI image generator. From the video concept you receive, "
             "create ONE detailed prompt for the opening frame of an ASMR / aesthetic video: macro "
             "or close-up composition, soft diffused lighting, shallow depth of field, rich tactile "
             "textures, soothing harmonious color palette, pristine clean styling."
+        ),
+        # ASMR voiceover must stay sparse and soft — this rides on top of the
+        # built-in _JSON_SYS as system_video_prompt when the preset is applied.
+        "video": (
+            "Voiceover style override: calm, soft, ASMR-whisper tone. Short soothing "
+            "sentences with natural pauses. Use noticeably FEWER words than the target "
+            "count — silence and sound are part of this genre; never rush the narration."
         ),
     },
     "product": {
@@ -135,6 +197,18 @@ STYLE_PRESETS: dict[str, dict] = {
             "demonstrate 2-3 concrete benefits as visible actions (not claims), and end with a "
             "desirable lifestyle moment featuring the product."
             + _PLOT_COMMON_RULES
+            + "\n\nAvoid: listing specs as spoken claims ('best quality', '10-hour battery') "
+            "instead of showing them in action, cluttered frames where the product gets lost, "
+            "fake-enthusiastic infomercial energy, showing the product only at the end."
+            + _EXAMPLE_GUARD
+            + "Idea: \"wireless earbuds\"\n"
+            "Concept: \"Matte-black earbuds rotate slowly on a glossy pedestal, light "
+            "sliding across their curves. A runner pops one in mid-stride and the chaos "
+            "of a loud city street visibly fades behind her — pedestrians blur, her pace "
+            "steadies. She sprints through rain while the earbuds sit locked in place, "
+            "water beading off them. Final beat: she slides the earbuds into their case "
+            "on a sunlit kitchen counter next to her morning coffee, one earbud still "
+            "glowing with a full-battery ring.\""
         ),
         "image": (
             "You write prompts for an AI image generator. From the video concept you receive, "
@@ -156,6 +230,18 @@ STYLE_PRESETS: dict[str, dict] = {
             "of tension or conflict, and an emotional resolution or twist in the final beat. "
             "Focus on emotion shown through action and environment."
             + _PLOT_COMMON_RULES
+            + "\n\nAvoid: starting with backstory instead of mid-action, more than one "
+            "protagonist, unresolved endings, emotions stated in words ('she was sad') "
+            "instead of shown through action, tension that never pays off."
+            + _EXAMPLE_GUARD
+            + "Idea: \"a lost dog\"\n"
+            "Concept: \"A small scruffy dog stands alone in the middle of a rain-soaked "
+            "crossing, cars streaking past on both sides, its leash dragging broken behind "
+            "it. It sniffs a lamppost, then a bakery doorway, ears dropping lower with "
+            "each wrong turn as the streetlights flicker on. Suddenly it freezes — nose "
+            "up, tail rigid — and bolts through a park, ears flying. Final beat: it "
+            "crashes into the arms of a girl kneeling in a doorway with wet missing-dog "
+            "flyers scattered around her, both of them soaked and shaking with joy.\""
         ),
         "image": (
             "You write prompts for an AI image generator. From the video concept you receive, "
