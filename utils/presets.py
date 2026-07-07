@@ -34,6 +34,7 @@ _PLOT_COMMON_RULES = (
     "action beats in order, and the overall mood.\n"
     "- The very first beat must be a strong visual hook for the first 2 seconds.\n"
     "- Every detail must be filmable and visual — no abstract claims, no dialogue lines.\n"
+    "- Write it as content that will become a voiceover and visuals.\n"
     "- The final video is {DURATION} seconds long — scale the number of beats accordingly."
 )
 
@@ -56,6 +57,8 @@ STYLE_PRESETS: dict[str, dict] = {
             "Works for any topic: a lively story with a hook in the first 2 seconds, "
             "cinematic realistic visuals. Start here if you're not sure."
         ),
+        # All-purpose quality baseline
+        "video_model": "kling_v3_std",
         "plot": (
             "You are a scriptwriter and creative director for short vertical videos "
             "(Reels / TikTok / Shorts). The user sends a raw video idea. Expand it into "
@@ -84,8 +87,11 @@ STYLE_PRESETS: dict[str, dict] = {
         "label": "😂 Humor / memes",
         "description": (
             "Funny, absurd videos: unexpected twists, exaggerated emotions, "
-            "meme energy, a punchline at the end. Bright punchy visuals."
+            "meme energy, a punchline at the end. Bright punchy visuals. "
+            "Uses text-to-video (no photo stage) at Turbo price."
         ),
+        # T2V skips the image step; Kling motion quality at Turbo price
+        "video_model": "kling_turbo_t2v",
         "plot": (
             "You are a comedy writer for short vertical videos (Reels / TikTok / Shorts). "
             "The user sends a raw idea. Turn it into a funny, meme-worthy mini-sketch: "
@@ -118,6 +124,8 @@ STYLE_PRESETS: dict[str, dict] = {
             "Inspiring videos: epic shots, rising intensity, an atmosphere of "
             "overcoming struggle. Dramatic cinematic lighting."
         ),
+        # Cinematic output required for epic/dramatic tone
+        "video_model": "kling_v3_std",
         "plot": (
             "You are a director of motivational short vertical videos (Reels / TikTok / Shorts). "
             "The user sends a raw idea. Turn it into an inspiring visual journey: start with a "
@@ -151,6 +159,8 @@ STYLE_PRESETS: dict[str, dict] = {
             "soothing pacing. Soft light, shallow depth of field. "
             "Voiceover is quiet and sparse."
         ),
+        # Slow textural content — motion quality less critical, cost efficiency wins
+        "video_model": "seedance_fast",
         "plot": (
             "You are a director of ASMR / aesthetic short vertical videos (Reels / TikTok / Shorts). "
             "The user sends a raw idea. Turn it into a slow, sensory, deeply satisfying sequence: "
@@ -190,6 +200,8 @@ STYLE_PRESETS: dict[str, dict] = {
             "Selling videos about a product: hero shots, benefits shown through "
             "action, lifestyle context. Clean commercial visuals."
         ),
+        # Commercial quality required
+        "video_model": "kling_v3_std",
         "plot": (
             "You are a director of product showcase short vertical videos (Reels / TikTok / Shorts). "
             "The user sends a raw idea about a product. Turn it into a scroll-stopping product story: "
@@ -223,6 +235,8 @@ STYLE_PRESETS: dict[str, dict] = {
             "Mini-stories with a plot: a protagonist, setup, conflict, and "
             "an emotional resolution. Atmospheric cinematic visuals."
         ),
+        # Film-like motion quality matters for narrative content
+        "video_model": "kling_v3_std",
         "plot": (
             "You are a storyteller directing short vertical videos (Reels / TikTok / Shorts). "
             "The user sends a raw idea. Turn it into a complete micro-story with one protagonist: "
@@ -248,6 +262,88 @@ STYLE_PRESETS: dict[str, dict] = {
             "create ONE detailed prompt for the opening frame of a cinematic story video: filmic "
             "moody lighting, atmospheric depth, the protagonist in a telling pose or situation, "
             "evocative environment that hints at the story, muted film-grade color palette."
+        ),
+    },
+    "educational": {
+        "label": "🎓 Educational",
+        "description": (
+            "Facts that stop the scroll: a shocking hook with real numbers, "
+            "two supporting facts, a takeaway that makes viewers feel smarter. "
+            "Documentary-style visuals."
+        ),
+        # Credibility matters — better motion/realism than Seedance Fast
+        "video_model": "kling_v3_std",
+        "plot": (
+            "You are a writer of viral educational short vertical videos (Reels / TikTok / "
+            "Shorts). The user sends a raw topic. Turn it into a fact-driven concept: open "
+            "with ONE specific shocking or surprising fact using real numbers, names or "
+            "dates — this is the hook. Then two supporting facts that deepen the hook: "
+            "specific, verifiable, counterintuitive. End with one memorable takeaway that "
+            "makes the viewer feel smarter or see the subject differently. Tone: smart, "
+            "casual, genuinely interesting — a knowledgeable friend, not a textbook and "
+            "not an influencer."
+            + _PLOT_COMMON_RULES
+            + "\n\nAvoid: textbook lecturing tone, vague claims without numbers "
+            "('scientists say', 'very fast'), clickbait that the facts don't back up, "
+            "abstract theory with nothing to show on screen — every fact needs a visual."
+            + _EXAMPLE_GUARD
+            + "Idea: \"octopus\"\n"
+            "Concept: \"An octopus squeezes its entire body through a gap the size of a "
+            "coin — because it has no bones and its brain is shaped like a donut. Two "
+            "thirds of its 500 million neurons are not in its head but in its arms: each "
+            "arm tastes, touches and decides on its own, and a severed arm can keep "
+            "hunting for up to an hour. Its three hearts pump blue blood, and the main "
+            "one stops every time it swims — which is why it prefers to crawl. Not an "
+            "alien from another planet — just your neighbour from the ocean floor.\""
+        ),
+        "image": (
+            "You write prompts for an AI image generator. From the video concept you receive, "
+            "create ONE detailed prompt for the opening frame of an educational video: "
+            "high-end documentary photography — credible, authoritative, real-world. "
+            "Dramatic directional lighting (side light, golden hour, cool lab light). "
+            "The image must SHOW the subject of the hook fact directly — no generic "
+            "people looking at cameras. Think National Geographic cover quality."
+        ),
+    },
+    "animated": {
+        "label": "🧸 Animated",
+        "description": (
+            "Character-based cartoon videos: expressive characters, one clear funny "
+            "or heartwarming moment. Vibrant 2D/3D animation visuals — not photorealistic."
+        ),
+        # Kling handles stylised/illustrated reference images better than Seedance
+        "video_model": "kling_turbo",
+        "plot": (
+            "You are a writer of character-based animated short vertical videos "
+            "(Reels / TikTok / Shorts). The user sends a raw idea. Turn it into an "
+            "animated scene concept: name the character(s) and give each ONE specific "
+            "personality trait; set a concrete visual scene; and build to ONE key "
+            "moment — the funny, cute or dramatic beat that makes the viewer feel "
+            "something. Adapt the tone to the idea: warm and gentle for cute or kids "
+            "content, ironic and punchy for absurdist or pop-culture ideas."
+            + _PLOT_COMMON_RULES
+            + "\n\nAvoid: a list of many events instead of one clear moment, "
+            "personality-less generic characters, complex dialogue (visual storytelling "
+            "only), describing the style as realistic — this is a cartoon world where "
+            "exaggeration is the point."
+            + _EXAMPLE_GUARD
+            + "Idea: \"a penguin afraid of water\"\n"
+            "Concept: \"A round little penguin with a permanently worried unibrow stands "
+            "at the edge of an ice hole while the rest of the colony dives in like "
+            "professional swimmers. He dips one toe, shudders theatrically, and puts on "
+            "inflatable armbands, a swim ring and a tiny snorkel — for a puddle two "
+            "penguins wide. A gust of wind nudges him in; a beat of frozen panic — then "
+            "he discovers the water is knee-deep, stands up dripping, and struts away "
+            "pretending that was the plan all along, snorkel still on.\""
+        ),
+        "image": (
+            "You write prompts for an AI image generator. From the video concept you receive, "
+            "create ONE detailed prompt for the opening frame of an animated video. "
+            "Style: vibrant 2D cartoon illustration or stylised 3D animation — NOT "
+            "photorealistic. The main character(s) clearly visible and expressive, bright "
+            "saturated colors, cel-shaded or soft painterly rendering, clean background "
+            "that doesn't compete with the characters. Warm and soft for cute content, "
+            "bold and graphic for absurdist content. Think modern animated series frame."
         ),
     },
 }

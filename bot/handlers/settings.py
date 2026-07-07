@@ -486,6 +486,13 @@ async def settings_image_prompt(callback: CallbackQuery, state: FSMContext):
 # CONTENT STYLE (niche presets + one-shot AI custom niche)
 # ─────────────────────────────────────────────
 
+def _video_model_label(model_key: str) -> str:
+    """Human-readable label for a video_model settings key."""
+    from services.kling import MODEL_LABELS as _KLING_LABELS
+    from services.seedance import MODEL_LABELS as _SEEDANCE_LABELS
+    return _KLING_LABELS.get(model_key) or _SEEDANCE_LABELS.get(model_key) or model_key
+
+
 async def _show_style_menu(callback: CallbackQuery):
     db = container.inject(DBService)
     s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
@@ -542,20 +549,29 @@ async def handle_style_selected(callback: CallbackQuery):
         return
     await callback.answer()
     db = container.inject(DBService)
-    await db.update_settings(
-        callback.from_user.id, callback.message.chat.id,
-        {
-            "content_preset": key,
-            "system_plot_prompt": preset["plot"],
-            "system_image_prompt": preset["image"],
-            # Optional per-niche voiceover/style override (e.g. ASMR whisper).
-            # Always written — switching presets must clear the previous one.
-            "system_video_prompt": preset.get("video", ""),
-        },
-    )
+    new_settings = {
+        "content_preset": key,
+        "system_plot_prompt": preset["plot"],
+        "system_image_prompt": preset["image"],
+        # Optional per-niche voiceover/style override (e.g. ASMR whisper).
+        # Always written — switching presets must clear the previous one.
+        "system_video_prompt": preset.get("video", ""),
+    }
+    # Each niche ships with a recommended video model (e.g. humor → cheap T2V,
+    # ASMR → Seedance Fast). Applied with the preset; announced to the user below.
+    model_note = ""
+    preset_model = preset.get("video_model")
+    if preset_model:
+        new_settings["video_model"] = preset_model
+        model_note = (
+            f"\n🎬 Video model switched to: <b>{_video_model_label(preset_model)}</b> "
+            "(recommended for this niche — you can change it in 🎬 Video model)."
+        )
+    await db.update_settings(callback.from_user.id, callback.message.chat.id, new_settings)
     await callback.message.answer(
-        f"✅ Style applied: <b>{preset['label']}</b>\n<i>{preset['description']}</i>\n\n"
-        "The plot and image styles are now tuned for this niche. "
+        f"✅ Style applied: <b>{preset['label']}</b>\n<i>{preset['description']}</i>\n"
+        + model_note +
+        "\n\nThe plot and image styles are now tuned for this niche. "
         "You can still hand-edit the texts with the «✏️» buttons in the style menu.",
         parse_mode="HTML",
     )
