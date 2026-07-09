@@ -527,7 +527,7 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             gen_result["raw_video_path"],
             video_scene or gen_result.get("voiceover_text", ""),
             subs_default,
-            video_model=settings.get("video_model") or "seedance",
+            has_native_audio=gen_result.get("has_native_audio", False),
             grade_enabled=grade_enabled,
             grade_params=grade_params,
             voice_id=settings.get("voice_id") or "",

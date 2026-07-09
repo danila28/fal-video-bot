@@ -23,10 +23,6 @@ _SFX_SCENE_CHARS = 200
 
 logger = logging.getLogger(__name__)
 
-# Models that produce native audio — TTS is NOT muxed in (it's already baked).
-# Currently empty: the lip-sync models (kling_omni, seedance_audio_ref) were removed.
-_NATIVE_AUDIO_MODELS: set[str] = set()
-
 # Models that generate video from text only — no reference image needed or used.
 _T2V_VIDEO_MODELS = {"seedance_t2v", "seedance_mini_t2v", "kling_t2v", "kling_turbo_t2v"}
 
@@ -88,7 +84,7 @@ async def _post_process_video(
     video_prompt: str,
     subs_default_on: bool,
     *,
-    video_model: str,
+    has_native_audio: bool = False,
     grade_enabled: bool = False,
     grade_params: dict | None = None,
     voice_id: str = "",
@@ -103,11 +99,12 @@ async def _post_process_video(
 ):
     """Pipeline: raw → grade → SFX → audio mux → karaoke subs → speed.
 
-    Models in _NATIVE_AUDIO_MODELS already have audio baked in — TTS is
-    layered on top (replace_existing_audio=False) instead of replacing silence.
+    has_native_audio comes from the generation result: when the model produced
+    its own audio track (e.g. Kling multi-shot sound, Seedance ASMR ambient),
+    TTS/music are layered on top (replace_existing_audio=False) instead of
+    replacing it, and the separate SFX stage is skipped.
     """
     word_timings = word_timings or []
-    has_native_audio = video_model in _NATIVE_AUDIO_MODELS
 
     # Stage 1: colour grade.
     base_silent = raw_video_path
@@ -270,6 +267,11 @@ async def _generate_seedance(
 
     is_t2v = model in _T2V_VIDEO_MODELS
 
+    # ASMR niche: the model's own synchronized ambient sound (slicing, rustling,
+    # pouring) IS the content — generate it and preserve it in post-processing;
+    # the quiet sparse TTS is mixed on top instead of replacing it.
+    keep_native = settings.get("content_preset") == "asmr"
+
     if not is_t2v and valid_paths:
         uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
         total_dur = sum(durations)
@@ -279,7 +281,9 @@ async def _generate_seedance(
             # scenes continuously in a single multi-scene request.
             await notify(
                 f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s)"
-                + f", {total_dur}s total) — takes ~3-5 min…"
+                + f", {total_dur}s total"
+                + (", native audio" if keep_native else "")
+                + ") — takes ~3-5 min…"
             )
             raw_video = await seedance.generate_multi_scene_clip(
                 scene_prompts=scenes,
@@ -287,13 +291,16 @@ async def _generate_seedance(
                 total_duration=total_dur,
                 resolution=resolution,
                 model_id=atlas_model_id,
+                keep_native_audio=keep_native,
             )
         else:
             # Longer than one call allows — clip-by-clip with last-frame
             # stitching for continuity, then FFmpeg concat.
             await notify(
                 f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
-                + f", {total_dur}s total) — each clip takes ~3-5 min…"
+                + f", {total_dur}s total"
+                + (", native audio" if keep_native else "")
+                + ") — each clip takes ~3-5 min…"
             )
             n = len(uploaded_urls)
             anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
@@ -303,6 +310,7 @@ async def _generate_seedance(
                 clip_duration=durations,
                 resolution=resolution,
                 model_id=atlas_model_id,
+                keep_native_audio=keep_native,
             )
             concat_transitions = transitions[:-1] if transitions else None
             raw_video = (
@@ -328,7 +336,8 @@ async def _generate_seedance(
                 image_url=anchor_image_url,  # Empty string first iteration (triggers T2V), then last-frame
                 duration=dur,
                 resolution=resolution,
-                model_id=atlas_model_id
+                model_id=atlas_model_id,
+                keep_native_audio=keep_native,
             )
             clips.append(clip)
             # Extract last frame for next clip's anchor (continuity stitching)
@@ -356,7 +365,7 @@ async def _generate_seedance(
         "tts_audio_path": tts_audio_path,
         "word_timings": word_timings,
         "voiceover_text": voiceover_text,
-        "has_native_audio": False,
+        "has_native_audio": keep_native,
     }
 
 
@@ -394,10 +403,19 @@ async def _generate_kling(
 
     is_t2v = model in _T2V_VIDEO_MODELS
 
-    use_native_audio = not bool(voiceover_text and voiceover_text.strip())
+    # Model-generated audio: always for the ASMR niche (sound IS the content),
+    # otherwise only when there is no voiceover to lay on top of silence.
+    use_native_audio = (
+        settings.get("content_preset") == "asmr"
+        or not bool(voiceover_text and voiceover_text.strip())
+    )
+    # Only the multi-shot path can actually generate sound; the regular
+    # clip-by-clip paths below always render silent (sound=False).
+    native_audio_generated = False
 
     # ── Multi-frame path (kling, kling_v3_std, kling_t2v) ────────────────────
     if model in _KLING_MF_KEYS:
+        native_audio_generated = use_native_audio
         # Atlas caps one multi_shot call at 15s total (and 6 shots max) — group
         # shots by cumulative duration, not by a fixed shot count, so a batch
         # of long shots can't silently exceed the per-call limit.
@@ -563,7 +581,7 @@ async def _generate_kling(
         "tts_audio_path": tts_audio_path,
         "word_timings": word_timings,
         "voiceover_text": voiceover_text,
-        "has_native_audio": use_native_audio,
+        "has_native_audio": native_audio_generated,
     }
 
 

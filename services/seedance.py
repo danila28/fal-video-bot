@@ -80,11 +80,18 @@ class SeedanceService:
         aspect_ratio: str = "9:16",
         resolution: str = "720p",
         model_id: str = _I2V,
+        keep_native_audio: bool = False,
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
 
         With an image: I2V using `image_url`. Without: falls back to the T2V
         sibling of `model_id` (same tier — Mini stays Mini, Fast stays base T2V).
+        keep_native_audio: let Seedance generate its own synchronized ambient
+        audio (footsteps, texture sounds, etc). Off by default — that audio is
+        normally replaced by our own TTS mix in post-processing anyway, so
+        generating it would just waste render time/cost. Turn on for niches
+        where the model's own sound IS the point (e.g. ASMR) — post-processing
+        must then mix TTS on top instead of replacing (see has_native_audio).
         """
         os.makedirs(self.static_dir, exist_ok=True)
         duration = max(4, min(_MAX_CALL_DURATION, duration))
@@ -101,7 +108,7 @@ class SeedanceService:
                 "duration": duration,
                 "ratio": aspect_ratio,
                 "resolution": resolution,
-                "generate_audio": False,
+                "generate_audio": keep_native_audio,
             }
         else:
             model = (
@@ -113,7 +120,7 @@ class SeedanceService:
                 "duration": duration,
                 "ratio": aspect_ratio,
                 "resolution": resolution,
-                "generate_audio": False,
+                "generate_audio": keep_native_audio,
                 "watermark": False,
             }
 
@@ -133,6 +140,7 @@ class SeedanceService:
         model_id: str = "",
         aspect_ratio: str = "9:16",
         resolution: str = "720p",
+        keep_native_audio: bool = False,
     ) -> str:
         """Single Atlas API call with [Scene1]...[SceneN] markers.
 
@@ -140,6 +148,8 @@ class SeedanceService:
         continuity without the need for last-frame stitching.
         total_duration overrides the clip_duration * len(scene_prompts) default —
         pass it to hit an exact target duration instead of a per-scene multiple.
+        keep_native_audio: see generate_clip — lets Seedance generate its own
+        ambient audio track instead of rendering silent.
         """
         os.makedirs(self.static_dir, exist_ok=True)
 
@@ -164,7 +174,7 @@ class SeedanceService:
             "duration": total_duration,
             "ratio": aspect_ratio,
             "resolution": resolution,
-            "generate_audio": False,
+            "generate_audio": keep_native_audio,
             "watermark": False,
         }
         if image_url:
@@ -184,6 +194,7 @@ class SeedanceService:
         clip_duration: int | list[int] = 10,
         resolution: str = "720p",
         model_id: str = _I2V,
+        keep_native_audio: bool = False,
     ) -> list[str]:
         """Generate multiple clips.
 
@@ -191,6 +202,7 @@ class SeedanceService:
         the next clip (visual continuity). `anchor_photo_urls` cycles through
         multiple images when provided.
         clip_duration: single value for every clip, or a per-clip list.
+        keep_native_audio: see generate_clip.
         """
         clips: list[str] = []
         durations = (
@@ -208,6 +220,7 @@ class SeedanceService:
                 duration=dur,
                 resolution=resolution,
                 model_id=model_id,
+                keep_native_audio=keep_native_audio,
             )
             clips.append(clip_path)
 
