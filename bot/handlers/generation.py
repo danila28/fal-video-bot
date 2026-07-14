@@ -16,6 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, InputMediaPhoto, Message
 from bot.guard import IsAllowed
 from bot.keyboards import (
+    get_idea_entry_keyboard,
     get_image_keyboard,
     get_persistent_keyboard,
     get_prompt_keyboard,
@@ -89,7 +90,11 @@ async def _begin_generation(message: Message, state: FSMContext):
         return
 
     await state.clear()
-    await message.answer("Send your idea 💡")
+    await message.answer(
+        "Send your idea 💡\n\nOr use your own ready-made script — it will be "
+        "taken as-is, with no plot rewriting:",
+        reply_markup=get_idea_entry_keyboard(),
+    )
     await state.set_state(GenerationState.RAW_PROMPT)
 
 
@@ -126,7 +131,7 @@ async def handle_raw_prompt(message: Message, state: FSMContext):
             system_prompt,
             settings.get("text_model") or "",
         )
-        await state.update_data(raw_prompt=message.text, enhance_prompt=enhance_prompt)
+        await state.update_data(raw_prompt=message.text, enhance_prompt=enhance_prompt, own_script=False)
         await send_long_message(
             message,
             f"Your prompt: {enhance_prompt}\nIf you want to improve it, send a corrected version or click Continue",
@@ -150,29 +155,27 @@ async def handle_edit_prompt(message: Message, state: FSMContext):
     await state.set_state(GenerationState.ENHANCE_PROMPT)
 
 
-@router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_ok", IsAllowed(allowed_users))
-async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
-    """Prompt OK → for T2V models skip image and go straight to video prompt;
-    for I2V models generate image and show for review."""
-    await callback.answer()
-    await callback.message.edit_reply_markup(reply_markup=None)
-
+async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, chat_id: int):
+    """Shared continuation once the concept text is final (normal flow or
+    own-script bypass): T2V models jump straight to the video prompt, I2V
+    models generate reference image(s) for review first."""
     db = container.inject(DBService)
-    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    settings = await db.get_settings(user_id, chat_id)
     video_model = settings.get("video_model") or ""
+    data = await state.get_data()
+    enhance_prompt = data.get("enhance_prompt", "")
+    strict = bool(data.get("own_script"))
 
     if video_model in _T2V_VIDEO_MODELS:
         # ── T2V: no image needed — jump straight to video prompt ──────────────
         await state.update_data(image_paths=[], image_path=None, image_prompt="")
         await state.update_data(generation_in_progress=True, generation_started_at=time.time())
-        await callback.message.answer("⏳ Generating video prompt…")
+        await message.answer("⏳ Generating video prompt…")
         try:
             gemini = container.inject(GeminiService)
-            data = await state.get_data()
-            enhance_prompt = data.get("enhance_prompt", "")
             text_model = settings.get("text_model") or ""
             video_prompt, hashtags = await asyncio.gather(
-                _build_video_prompt(enhance_prompt, settings, gemini),
+                _build_video_prompt(enhance_prompt, settings, gemini, strict_script=strict),
                 gemini.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
             )
             scene, voiceover = _split_video_prompt(video_prompt, gemini)
@@ -187,12 +190,12 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
             )
             text = _format_video_prompt_message(scene, voiceover)
             await send_long_message(
-                callback.message, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML"
+                message, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML"
             )
             await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
         except Exception as e:
             logger.error(f"Video prompt generation failed (T2V): {e}")
-            await callback.message.answer(
+            await message.answer(
                 f"❌ Error generating prompt: {e}\nTry again.",
                 reply_markup=get_prompt_keyboard(),
             )
@@ -203,42 +206,108 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
 
     # ── I2V: generate reference image(s) and show for review ────────────────
     image_count = int(settings.get("image_count", 1))
-    await callback.message.answer(
+    await message.answer(
         f"⏳ Generating {image_count} image{'s' if image_count > 1 else ''}…"
     )
     try:
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
-        data = await state.get_data()
-        enhance_prompt = data.get("enhance_prompt", "")
 
-        image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini)
+        image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini, strict_script=strict)
 
         image_paths = await imagegen.generate_many(
             prompt=image_prompt,
             model=settings.get("image_model") or "",  # empty → ImageGenService default
             video_model=video_model or "seedance",
             count=image_count,
-            notify=callback.message.answer,
+            notify=message.answer,
         )
 
         await state.update_data(image_paths=image_paths, image_prompt=image_prompt)
-        await _send_image_preview(callback.message, image_paths)
-        await callback.message.answer("Image(s) created.\nContinue?", reply_markup=get_image_keyboard())
+        await _send_image_preview(message, image_paths)
+        await message.answer("Image(s) created.\nContinue?", reply_markup=get_image_keyboard())
         await state.set_state(GenerationState.CONFIRM_IMAGE)
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
-        await callback.message.answer(
+        await message.answer(
             f"❌ Image generation failed: {e}\nTry again or change the image model.",
             reply_markup=get_prompt_keyboard(),
         )
         await state.set_state(GenerationState.ENHANCE_PROMPT)
 
 
+@router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_ok", IsAllowed(allowed_users))
+async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
+    """Prompt OK → for T2V models skip image and go straight to video prompt;
+    for I2V models generate image and show for review."""
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await _proceed_to_media(callback.message, state, callback.from_user.id, callback.message.chat.id)
+
+
+# ─────────────────────────────────────────────
+# OWN-SCRIPT MODE (hard bypass of the plot stage)
+# ─────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == "own_script:start", IsAllowed(allowed_users))
+async def handle_own_script_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    db = container.inject(DBService)
+    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    td = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    vo_on = settings.get("voiceover_enabled", True)
+    speed = float(settings.get("video_speed", 1.0))
+    lines = [
+        "📝 <b>Own-script mode</b>",
+        "",
+        "Send your final script — it is used as-is: no plot rewriting, "
+        "no invented characters or framing. The bot only splits it into shots "
+        "for the video model.",
+        "",
+        "Technical settings come from ⚙️ Settings, not from the text:",
+        f"• ⏱ Duration: <b>{td}s</b>",
+        f"• 🗣 Voiceover: <b>{'ON' if vo_on else 'OFF'}</b>",
+    ]
+    if speed != 1.0:
+        lines.append(f"• ⚡ Speed {speed:g}× — final length will be ~{round(td / speed)}s")
+    lines += [
+        "",
+        "<i>Note: visual descriptions are translated to English for the video "
+        "model, and wording may be slightly compressed to fit per-shot limits — "
+        "content and order of events are preserved.</i>",
+    ]
+    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+    await state.set_state(GenerationState.OWN_SCRIPT)
+
+
+@router.message(GenerationState.OWN_SCRIPT, IsAllowed(allowed_users))
+async def handle_own_script_input(message: Message, state: FSMContext):
+    if await _is_generating(state):
+        await message.answer("⚠️ Generation in progress — please wait until it finishes.")
+        return
+    script = (message.text or "").strip()
+    if len(script) < 20:
+        await message.answer("❌ The script is too short — send the full scene description.")
+        return
+    await state.update_data(raw_prompt=script, enhance_prompt=script, own_script=True)
+    await _proceed_to_media(message, state, message.from_user.id, message.chat.id)
+
+
 @router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_regenerate", IsAllowed(allowed_users))
 async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
+    data = await state.get_data()
+    if data.get("own_script"):
+        # Own-script mode: the text is final by definition — never re-run the
+        # plot stage on it, that would reintroduce plot rewriting.
+        await callback.message.answer(
+            "📝 Own-script mode — the script is used as-is and is not regenerated.\n"
+            "Send an edited version as a message, or click Continue.",
+            reply_markup=get_prompt_keyboard(),
+        )
+        await state.set_state(GenerationState.ENHANCE_PROMPT)
+        return
     await callback.message.answer("Creating upgraded prompt...")
     try:
         gemini = container.inject(GeminiService)
@@ -299,7 +368,9 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
         )
         data = await state.get_data()
         enhance_prompt = data.get("enhance_prompt", "")
-        image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini)
+        image_prompt = await _build_image_prompt(
+            enhance_prompt, settings, gemini, strict_script=bool(data.get("own_script"))
+        )
         image_paths = await imagegen.generate_many(
             prompt=image_prompt,
             model=settings.get("image_model") or "",  # empty → ImageGenService default
@@ -400,7 +471,10 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
         data = await state.get_data()
         await callback.message.answer("⏳ Regenerating scene…")
-        video_prompt = await _build_video_prompt(data.get("enhance_prompt", ""), settings, gemini)
+        video_prompt = await _build_video_prompt(
+            data.get("enhance_prompt", ""), settings, gemini,
+            strict_script=bool(data.get("own_script")),
+        )
         new_scene, _ = _split_video_prompt(video_prompt, gemini)
         voiceover = data.get("video_voiceover", "")
         await state.update_data(video_scene=new_scene, video_script_json=video_prompt)
@@ -424,7 +498,10 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
         data = await state.get_data()
         await callback.message.answer("⏳ Regenerating voiceover…")
-        video_prompt = await _build_video_prompt(data.get("enhance_prompt", ""), settings, gemini)
+        video_prompt = await _build_video_prompt(
+            data.get("enhance_prompt", ""), settings, gemini,
+            strict_script=bool(data.get("own_script")),
+        )
         _, new_voiceover = _split_video_prompt(video_prompt, gemini)
         scene = data.get("video_scene", "")
         await state.update_data(video_voiceover=new_voiceover, video_script_json=video_prompt)
@@ -507,6 +584,25 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
         else:
             video_scene = data.get("video_scene") or data.get("video_prompt") or data.get("enhance_prompt", "")
         video_voiceover = data.get("video_voiceover", "")
+
+        # 🗣 Voiceover OFF: hard programmatic guarantee — no TTS regardless of
+        # what the script model produced. Also unlocks native model audio.
+        if not settings.get("voiceover_enabled", True):
+            if video_voiceover:
+                await callback.message.answer(
+                    "🗣 Voiceover is OFF in settings — generating without narration."
+                )
+            video_voiceover = ""
+
+        # ⚡ Speed changes the final length after generation — warn up front so
+        # the requested duration isn't a surprise.
+        speed = float(settings.get("video_speed", 1.0))
+        if speed != 1.0:
+            td = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+            await callback.message.answer(
+                f"⚡ Speed {speed:g}× is ON — the final video will be ~{round(td / speed)}s "
+                f"(from {td}s generated). Set Speed to normal in ⚙️ for exact length."
+            )
 
         gen_result = await generate_video_for_model(
             gemini=gemini,

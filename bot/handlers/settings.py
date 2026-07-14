@@ -73,11 +73,10 @@ async def settings_back(callback: CallbackQuery):
 
 
 @router.callback_query(lambda c: c.data == "settings:advanced", IsAllowed(allowed_users))
-async def settings_advanced(callback: CallbackQuery):
-    await callback.answer()
-    db = container.inject(DBService)
-    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
-    kb = get_advanced_settings_keyboard(
+def _advanced_kb(s: dict):
+    """Build the advanced-settings keyboard from a settings dict (single source
+    of truth — every toggle handler reuses this instead of hand-rolling args)."""
+    return get_advanced_settings_keyboard(
         subtitles_default_on=s.get("subtitles_enabled", True),
         grade_on=s.get("colour_grade_enabled", False),
         target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
@@ -86,7 +85,15 @@ async def settings_advanced(callback: CallbackQuery):
         video_speed=float(s.get("video_speed", 1.0)),
         video_resolution=s.get("video_resolution", "720p"),
         image_count=int(s.get("image_count", 1)),
+        voiceover_on=s.get("voiceover_enabled", True),
     )
+
+
+async def settings_advanced(callback: CallbackQuery):
+    await callback.answer()
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    kb = _advanced_kb(s)
     try:
         await callback.message.edit_text("⚙️ More settings", reply_markup=kb)
     except Exception:
@@ -115,76 +122,40 @@ async def settings_show(callback: CallbackQuery):
         await callback.message.answer(f"Error showing settings: {e}")
 
 
-@router.callback_query(lambda c: c.data == "settings:subtitles_toggle", IsAllowed(allowed_users))
-async def settings_subtitles_toggle(callback: CallbackQuery):
+async def _flip_setting(callback: CallbackQuery, key: str, default: bool, label: str) -> None:
+    """Toggle a boolean setting and refresh the advanced keyboard."""
     db = container.inject(DBService)
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
     s = await db.get_settings(user_id, chat_id)
-    new_value = not s.get("subtitles_enabled", True)
-    await db.update_settings(user_id, chat_id, {"subtitles_enabled": new_value})
-    kb = get_advanced_settings_keyboard(
-        subtitles_default_on=new_value,
-        grade_on=s.get("colour_grade_enabled", False),
-        target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
-        utc_offset=s.get("utc_offset_hours", 0),
-        sfx_on=s.get("sfx_enabled", False),
-        video_speed=float(s.get("video_speed", 1.0)),
-        video_resolution=s.get("video_resolution", "720p"),
-    )
-    await callback.answer(f"Subtitles: {'ON' if new_value else 'OFF'}")
+    new_value = not s.get(key, default)
+    s = await db.update_settings(user_id, chat_id, {key: new_value})
+    kb = _advanced_kb(s)
+    await callback.answer(f"{label}: {'ON' if new_value else 'OFF'}")
     try:
         await callback.message.edit_reply_markup(reply_markup=kb)
     except Exception:
         await callback.message.answer("⚙️ More settings", reply_markup=kb)
+
+
+@router.callback_query(lambda c: c.data == "settings:subtitles_toggle", IsAllowed(allowed_users))
+async def settings_subtitles_toggle(callback: CallbackQuery):
+    await _flip_setting(callback, "subtitles_enabled", True, "Subtitles")
 
 
 @router.callback_query(lambda c: c.data == "settings:grade_toggle", IsAllowed(allowed_users))
 async def settings_grade_toggle(callback: CallbackQuery):
-    db = container.inject(DBService)
-    user_id = callback.from_user.id
-    chat_id = callback.message.chat.id
-    s = await db.get_settings(user_id, chat_id)
-    new_value = not s.get("colour_grade_enabled", False)
-    await db.update_settings(user_id, chat_id, {"colour_grade_enabled": new_value})
-    kb = get_advanced_settings_keyboard(
-        subtitles_default_on=s.get("subtitles_enabled", True),
-        grade_on=new_value,
-        target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
-        utc_offset=s.get("utc_offset_hours", 0),
-        sfx_on=s.get("sfx_enabled", False),
-        video_speed=float(s.get("video_speed", 1.0)),
-        video_resolution=s.get("video_resolution", "720p"),
-    )
-    await callback.answer(f"Colour grade: {'ON' if new_value else 'OFF'}")
-    try:
-        await callback.message.edit_reply_markup(reply_markup=kb)
-    except Exception:
-        await callback.message.answer("⚙️ More settings", reply_markup=kb)
+    await _flip_setting(callback, "colour_grade_enabled", False, "Colour grade")
 
 
 @router.callback_query(lambda c: c.data == "settings:sfx_toggle", IsAllowed(allowed_users))
 async def settings_sfx_toggle(callback: CallbackQuery):
-    db = container.inject(DBService)
-    user_id = callback.from_user.id
-    chat_id = callback.message.chat.id
-    s = await db.get_settings(user_id, chat_id)
-    new_value = not s.get("sfx_enabled", False)
-    await db.update_settings(user_id, chat_id, {"sfx_enabled": new_value})
-    kb = get_advanced_settings_keyboard(
-        subtitles_default_on=s.get("subtitles_enabled", True),
-        grade_on=s.get("colour_grade_enabled", False),
-        target_duration=s.get("target_duration", DEFAULT_TARGET_DURATION),
-        utc_offset=s.get("utc_offset_hours", 0),
-        sfx_on=new_value,
-        video_speed=float(s.get("video_speed", 1.0)),
-        video_resolution=s.get("video_resolution", "720p"),
-    )
-    await callback.answer(f"SFX / ASMR: {'ON' if new_value else 'OFF'}")
-    try:
-        await callback.message.edit_reply_markup(reply_markup=kb)
-    except Exception:
-        await callback.message.answer("⚙️ More settings", reply_markup=kb)
+    await _flip_setting(callback, "sfx_enabled", False, "SFX / ASMR")
+
+
+@router.callback_query(lambda c: c.data == "settings:voiceover_toggle", IsAllowed(allowed_users))
+async def settings_voiceover_toggle(callback: CallbackQuery):
+    await _flip_setting(callback, "voiceover_enabled", True, "Voiceover")
 
 
 @router.callback_query(lambda c: c.data == "settings:resolution", IsAllowed(allowed_users))

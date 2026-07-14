@@ -215,6 +215,16 @@ async def generate_video_for_model(
         if parsed is not None:
             shots = parsed.get("shots") or None
 
+    # Safety net: LLM-produced shot durations may not sum to the requested
+    # target — renormalize in code so the video length matches the setting.
+    if shots:
+        if model.startswith("kling"):
+            min_dur, max_dur = 3, 10
+        else:
+            min_dur, max_dur = 4, 15
+        target = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+        shots = _normalize_shot_durations(shots, target, min_dur, max_dur)
+
     # Prefix routing: any kling_* goes to Kling (unknown/removed variants fall
     # back to Kling v3 Pro inside), everything else — to Seedance (default).
     if model.startswith("kling"):
@@ -267,10 +277,14 @@ async def _generate_seedance(
 
     is_t2v = model in _T2V_VIDEO_MODELS
 
-    # ASMR niche: the model's own synchronized ambient sound (slicing, rustling,
-    # pouring) IS the content — generate it and preserve it in post-processing;
-    # the quiet sparse TTS is mixed on top instead of replacing it.
-    keep_native = settings.get("content_preset") == "asmr"
+    # Native model audio: for the ASMR niche the model's own synchronized sound
+    # IS the content (TTS mixed quietly on top); and when there is no voiceover
+    # at all (e.g. 🗣 Voiceover OFF), ambient sound beats dead silence —
+    # mirrors the Kling multi-shot behaviour.
+    keep_native = (
+        settings.get("content_preset") == "asmr"
+        or not bool(voiceover_text and voiceover_text.strip())
+    )
 
     if not is_t2v and valid_paths:
         uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
@@ -296,6 +310,8 @@ async def _generate_seedance(
         else:
             # Longer than one call allows — clip-by-clip with last-frame
             # stitching for continuity, then FFmpeg concat.
+            durations = _add_crossfade_padding(durations, joints=len(scenes) - 1, max_dur=15)
+            total_dur = sum(durations)
             await notify(
                 f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
                 + f", {total_dur}s total"
@@ -319,6 +335,7 @@ async def _generate_seedance(
             )
     else:
         # No reference images — fallback to T2V or clip-by-clip I2V with last-frame stitching
+        durations = _add_crossfade_padding(durations, joints=len(scenes) - 1, max_dur=15)
         await notify(
             f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)) — each clip takes ~3-5 min…"
         )
@@ -422,6 +439,13 @@ async def _generate_kling(
         _BATCH_MAX_DURATION = 15
         _BATCH_MAX_SHOTS = 6
         batch_indices = _batch_shot_indices(shot_durations_list, _BATCH_MAX_DURATION, _BATCH_MAX_SHOTS)
+        if len(batch_indices) > 1:
+            # Multiple batches will be concat'ed with 0.5s crossfades — pad the
+            # shot durations to compensate the overlap loss, then re-batch.
+            shot_durations_list = _add_crossfade_padding(
+                shot_durations_list, joints=len(batch_indices) - 1, max_dur=10
+            )
+            batch_indices = _batch_shot_indices(shot_durations_list, _BATCH_MAX_DURATION, _BATCH_MAX_SHOTS)
         batches = [[scenes[i] for i in idxs] for idxs in batch_indices]
         batch_dur_lists = [[shot_durations_list[i] for i in idxs] for idxs in batch_indices]
         n_batches = len(batches)
@@ -483,6 +507,9 @@ async def _generate_kling(
     # ── Regular Kling I2V path (Turbo, O3) ───────────────────────────────────
     elif not is_t2v and valid_paths:
         uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
+        shot_durations_list = _add_crossfade_padding(
+            shot_durations_list, joints=len(scenes) - 1, max_dur=10
+        )
         await notify(
             f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
             + (f", {len(valid_paths)} ref photo(s)" if valid_paths else "")
@@ -532,6 +559,9 @@ async def _generate_kling(
 
     # ── T2V path (no reference images) ──────────────────────────────────────────
     else:
+        shot_durations_list = _add_crossfade_padding(
+            shot_durations_list, joints=len(scenes) - 1, max_dur=10
+        )
         await notify(
             f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)) — each clip takes ~2-4 min…"
         )
@@ -691,6 +721,67 @@ def _plan_clip_durations(target_duration: int, min_dur: int, max_dur: int) -> li
     return [max(min_dur, min(max_dur, d)) for d in durations]
 
 
+def _normalize_shot_durations(
+    shots: list[dict], target_duration: int, min_dur: int, max_dur: int
+) -> list[dict]:
+    """Rescale LLM-produced shot durations so they sum to target_duration.
+
+    LLMs are unreliable at arithmetic — a 30s request may come back as 27s or
+    34s of shots. Proportionally rescale, clamp to the model's per-shot range,
+    then nudge ±1s until the sum is exact (or as close as the clamps allow)."""
+    durs = [int(s.get("duration_seconds") or min_dur) for s in shots]
+    total = sum(durs)
+    if total <= 0:
+        durs = [min_dur] * len(shots)
+        total = sum(durs)
+    # Clamp FIRST — even when the sum happens to match the target, individual
+    # values may violate the model's per-shot range (e.g. 15+15=30 on Kling
+    # whose max is 10) and would be rejected by Atlas.
+    scaled = [
+        max(min_dur, min(max_dur, round(d * target_duration / total)))
+        for d in durs
+    ]
+    diff = target_duration - sum(scaled)
+    i = 0
+    guard = 4 * len(scaled) + 8
+    while diff != 0 and guard > 0:
+        idx = i % len(scaled)
+        step = 1 if diff > 0 else -1
+        candidate = scaled[idx] + step
+        if min_dur <= candidate <= max_dur:
+            scaled[idx] = candidate
+            diff -= step
+        i += 1
+        guard -= 1
+    if sum(scaled) != target_duration:
+        logger.warning(
+            f"Shot durations clamped to {sum(scaled)}s (target {target_duration}s, "
+            f"per-shot range {min_dur}-{max_dur}s, {len(scaled)} shots)"
+        )
+    for s, d in zip(shots, scaled):
+        s["duration_seconds"] = d
+    return shots
+
+
+def _add_crossfade_padding(
+    durations: list[int], joints: int, max_dur: int, fade: float = 0.5
+) -> list[int]:
+    """Compensate concat crossfades: each joint overlaps `fade` seconds, so the
+    final file comes out ~fade*joints shorter than the sum of clip lengths.
+    Add whole seconds to clips (respecting max_dur) to cover the loss."""
+    extra = round(fade * joints)
+    i = 0
+    attempts = 2 * len(durations)
+    while extra > 0 and attempts > 0:
+        idx = i % len(durations)
+        if durations[idx] < max_dur:
+            durations[idx] += 1
+            extra -= 1
+        i += 1
+        attempts -= 1
+    return durations
+
+
 def _batch_shot_indices(durations: list[int], max_batch_duration: int, max_shots_per_batch: int) -> list[list[int]]:
     """Group shot indices into batches whose durations sum to at most
     max_batch_duration (Atlas Cloud's per-call limit for Kling's multi_shot
@@ -711,9 +802,37 @@ def _batch_shot_indices(durations: list[int], max_batch_duration: int, max_shots
     return batches
 
 
-async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
-    """Generate video script as structured JSON. Falls back to text format on parse failure."""
-    base_sys = _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
+# Hard, non-editable preamble for the own-script mode: the user's text is a
+# final approved script — structure it, never reinvent it. Niche presets and
+# the user's system_video_prompt do NOT apply in this mode.
+_STRICT_SCRIPT_SYS = (
+    "OWN-SCRIPT MODE — the user's message is a FINAL, approved video script.\n"
+    "- Do NOT invent new characters, narrators, framing devices, locations or "
+    "events that are not in the script.\n"
+    "- Preserve the script's content, subjects and order of events exactly; "
+    "your only job is to split it into shots.\n"
+    "- scene_prompt must be in English: translate the script's visual "
+    "descriptions faithfully if they are in another language.\n"
+    "- Compress wording only as much as needed to fit shot limits — never add "
+    "new creative material while doing so.\n"
+    "- spoken_text: derive it strictly from the script itself, in the script's "
+    "original language, staying faithful to its wording."
+)
+
+
+async def _build_video_prompt(
+    enhance_prompt: str, settings: dict, gemini: GeminiService, strict_script: bool = False
+) -> str:
+    """Generate video script as structured JSON. Falls back to text format on parse failure.
+
+    strict_script=True (own-script mode): the user's text is treated as a final
+    script — the niche preset's video prompt is ignored and a hard preamble
+    forbids inventing new content; the model only structures the text into shots.
+    """
+    base_sys = (
+        _STRICT_SCRIPT_SYS if strict_script
+        else _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
+    )
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
     clip_duration = _clip_duration_for_model(video_model)
@@ -781,12 +900,17 @@ async def _build_video_prompt(enhance_prompt: str, settings: dict, gemini: Gemin
         return raw  # valid JSON ✓
 
     logger.warning("Gemini returned invalid JSON for video script — falling back to text format")
-    return await _build_video_prompt_text(enhance_prompt, settings, gemini)
+    return await _build_video_prompt_text(enhance_prompt, settings, gemini, strict_script=strict_script)
 
 
-async def _build_video_prompt_text(enhance_prompt: str, settings: dict, gemini: GeminiService) -> str:
+async def _build_video_prompt_text(
+    enhance_prompt: str, settings: dict, gemini: GeminiService, strict_script: bool = False
+) -> str:
     """Text-format fallback (original implementation)."""
-    base_sys = _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
+    base_sys = (
+        _STRICT_SCRIPT_SYS if strict_script
+        else _substitute_prompt_vars(settings.get("system_video_prompt") or "", settings)
+    )
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     video_model = (settings.get("video_model") or "seedance").lower()
     clip_duration = _clip_duration_for_model(video_model)
@@ -842,16 +966,28 @@ async def _build_video_prompt_text(enhance_prompt: str, settings: dict, gemini: 
     )
 
 
+_STRICT_IMAGE_SYS = (
+    "OWN-SCRIPT MODE — the text you receive is a final, approved video script. "
+    "Create ONE image-generation prompt that faithfully depicts the OPENING "
+    "moment of this script: same subjects, same setting, same mood. Do not add "
+    "characters, objects or framing devices that are not in the script."
+)
+
+
 async def _build_image_prompt(
     enhance_prompt: str,
     settings: dict,
     gemini: GeminiService,
+    strict_script: bool = False,
 ) -> str:
     from utils.presets import DEFAULT_IMAGE_PROMPT, IMAGE_SYS_SUFFIX
     # User/preset text sets the style; the hard output requirements (single
     # frame, English, 9:16, no text/watermarks) are always enforced in code —
     # same pattern as _JSON_SYS for the video script.
-    base_sys = settings.get("system_image_prompt") or DEFAULT_IMAGE_PROMPT
+    if strict_script:
+        base_sys = _STRICT_IMAGE_SYS
+    else:
+        base_sys = settings.get("system_image_prompt") or DEFAULT_IMAGE_PROMPT
     return await gemini.generate_text(
         enhance_prompt,
         base_sys + IMAGE_SYS_SUFFIX,

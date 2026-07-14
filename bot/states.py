@@ -23,6 +23,7 @@ class GenerationState(StatesGroup):
     SET_CUSTOM_DURATION = State()
 
     RAW_PROMPT = State()
+    OWN_SCRIPT = State()
     ENHANCE_PROMPT = State()
     CONFIRM_IMAGE = State()
     CONFIRM_VIDEO_PROMPT = State()

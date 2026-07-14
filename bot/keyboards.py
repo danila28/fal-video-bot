@@ -22,6 +22,15 @@ def get_persistent_keyboard():
     )
 
 
+def get_idea_entry_keyboard():
+    """Shown with the 'Send your idea' message — offers the own-script bypass."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Use my own script", callback_data="own_script:start")],
+        ]
+    )
+
+
 def get_prompt_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -199,17 +208,22 @@ def get_advanced_settings_keyboard(
     video_speed: float = 1.0,
     video_resolution: str = "720p",
     image_count: int = 1,
+    voiceover_on: bool = True,
 ):
     """Advanced settings sub-page — toggles, quality, publishing."""
     subs_label  = "🔤 Subtitles: ON"  if subtitles_default_on else "🔤 Subtitles: OFF"
     grade_label = "🎨 Grade: ON"      if grade_on             else "🎨 Grade: OFF"
     sfx_label   = "🔊 SFX: ON"       if sfx_on               else "🔊 SFX: OFF"
+    vo_label    = "🗣 Voiceover: ON" if voiceover_on         else "🗣 Voiceover: OFF"
     spd_label   = f"⚡ {video_speed:.2f}×" if video_speed != 1.0 else "⚡ Speed: normal"
     tz_sign     = "+" if utc_offset >= 0 else ""
     img_label   = f"🖼 {image_count} photo{'s' if image_count > 1 else ''}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=subs_label, callback_data="settings:subtitles_toggle")],
+            [
+                InlineKeyboardButton(text=subs_label, callback_data="settings:subtitles_toggle"),
+                InlineKeyboardButton(text=vo_label,   callback_data="settings:voiceover_toggle"),
+            ],
             [
                 InlineKeyboardButton(text=grade_label,       callback_data="settings:grade_toggle"),
                 InlineKeyboardButton(text="🎚 Grade params", callback_data="settings:grade_params"),
