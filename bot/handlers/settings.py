@@ -72,7 +72,6 @@ async def settings_back(callback: CallbackQuery):
         await callback.message.answer("⚙️ Settings", reply_markup=get_settings_keyboard(is_t2v))
 
 
-@router.callback_query(lambda c: c.data == "settings:advanced", IsAllowed(allowed_users))
 def _advanced_kb(s: dict):
     """Build the advanced-settings keyboard from a settings dict (single source
     of truth — every toggle handler reuses this instead of hand-rolling args)."""
@@ -89,6 +88,7 @@ def _advanced_kb(s: dict):
     )
 
 
+@router.callback_query(lambda c: c.data == "settings:advanced", IsAllowed(allowed_users))
 async def settings_advanced(callback: CallbackQuery):
     await callback.answer()
     db = container.inject(DBService)
