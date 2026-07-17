@@ -156,6 +156,11 @@ async def _post_process_video(
             "video_path_raw": raw_video_path,
             "video_path_base": base_path,
             "video_path_subbed": subbed,
+            # base/subbed are stored UNSPED (needed for editing/re-burning) —
+            # the subtitle toggle re-applies this factor before showing them.
+            "applied_speed": video_speed,
+            "video_path_base_sped": None,
+            "video_path_subbed_sped": final if video_speed != 1.0 else None,
             "voiceover_text": voiceover_text,
             "word_timings": word_timings,
             "subtitles_on": True,
@@ -168,6 +173,9 @@ async def _post_process_video(
         "video_path_raw": raw_video_path,
         "video_path_base": base_path,
         "video_path_subbed": None,
+        "applied_speed": video_speed,
+        "video_path_base_sped": final if video_speed != 1.0 else None,
+        "video_path_subbed_sped": None,
         "voiceover_text": voiceover_text,
         "word_timings": word_timings,
         "subtitles_on": False,

@@ -299,12 +299,18 @@ async def settings_duration_selected(callback: CallbackQuery, state: FSMContext)
 
 @router.message(GenerationState.SET_CUSTOM_DURATION, IsAllowed(allowed_users))
 async def handle_custom_duration(message: Message, state: FSMContext):
+    # Invalid input keeps the state so "Try again" actually works —
+    # the user just sends another number (previously the state was cleared
+    # in `finally`, silently swallowing the retry).
     try:
-        duration = int(message.text.strip())
-        if duration < 5 or duration > 300:
-            await message.answer("❌ Duration must be between 5-300 seconds. Try again.")
-            return
-
+        duration = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("❌ Please enter a valid number (5-300). Try again.")
+        return
+    if duration < 5 or duration > 300:
+        await message.answer("❌ Duration must be between 5-300 seconds. Try again.")
+        return
+    try:
         db = container.inject(DBService)
         await db.update_settings(
             message.from_user.id, message.chat.id, {"target_duration": duration}
@@ -312,12 +318,9 @@ async def handle_custom_duration(message: Message, state: FSMContext):
         await message.answer(
             f"✅ Target duration set to <b>{duration}s</b>.", parse_mode="HTML"
         )
-    except ValueError:
-        await message.answer("❌ Please enter a valid number (5-300).")
     except Exception as e:
         await message.answer(f"❌ Error: {e}")
-    finally:
-        await state.clear()
+    await state.clear()
 
 
 @router.callback_query(lambda c: c.data == "settings:image_count", IsAllowed(allowed_users))

@@ -205,7 +205,10 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
         return
 
     # ── I2V: generate reference image(s) and show for review ────────────────
+    # Flag guards against double-taps — without it two parallel image
+    # pipelines run and the user gets (and pays for) duplicate images.
     image_count = int(settings.get("image_count", 1))
+    await state.update_data(generation_in_progress=True, generation_started_at=time.time())
     await message.answer(
         f"⏳ Generating {image_count} image{'s' if image_count > 1 else ''}…"
     )
@@ -234,12 +237,18 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
             reply_markup=get_prompt_keyboard(),
         )
         await state.set_state(GenerationState.ENHANCE_PROMPT)
+    finally:
+        await state.update_data(generation_in_progress=False)
 
 
 @router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_ok", IsAllowed(allowed_users))
 async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
     """Prompt OK → for T2V models skip image and go straight to video prompt;
     for I2V models generate image and show for review."""
+    # Guard against double-taps — otherwise two parallel pipelines start.
+    if await _is_generating(state):
+        await callback.answer("Already generating — please wait.", show_alert=False)
+        return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
     await _proceed_to_media(callback.message, state, callback.from_user.id, callback.message.chat.id)
@@ -295,6 +304,10 @@ async def handle_own_script_input(message: Message, state: FSMContext):
 
 @router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_regenerate", IsAllowed(allowed_users))
 async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
+    # Guard against double-taps — prevents duplicate parallel LLM calls.
+    if await _is_generating(state):
+        await callback.answer("Already generating — please wait.", show_alert=False)
+        return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
     data = await state.get_data()
@@ -308,6 +321,7 @@ async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(GenerationState.ENHANCE_PROMPT)
         return
+    await state.update_data(generation_in_progress=True, generation_started_at=time.time())
     await callback.message.answer("Creating upgraded prompt...")
     try:
         gemini = container.inject(GeminiService)
@@ -332,6 +346,8 @@ async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
         )
     except Exception as e:
         await callback.message.answer(f"Error: {str(e)}\nTry again", reply_markup=get_prompt_keyboard())
+    finally:
+        await state.update_data(generation_in_progress=False)
     await state.set_state(GenerationState.ENHANCE_PROMPT)
 
 
@@ -355,8 +371,13 @@ async def handle_image_prompt_change(callback: CallbackQuery, state: FSMContext)
 
 @router.callback_query(GenerationState.CONFIRM_IMAGE, lambda c: c.data == "image_regenerate", IsAllowed(allowed_users))
 async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
+    # Guard against double-taps — otherwise duplicate images are generated.
+    if await _is_generating(state):
+        await callback.answer("Already generating — please wait.", show_alert=False)
+        return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
+    await state.update_data(generation_in_progress=True, generation_started_at=time.time())
     try:
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
@@ -383,6 +404,8 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("Image(s) created.\nContinue?", reply_markup=get_image_keyboard())
     except Exception as e:
         await callback.message.answer(f"Error: {str(e)}\nTry again", reply_markup=get_image_keyboard())
+    finally:
+        await state.update_data(generation_in_progress=False)
     await state.set_state(GenerationState.CONFIRM_IMAGE)
 
 
@@ -740,6 +763,22 @@ async def handle_video_subtitles_toggle(callback: CallbackQuery, state: FSMConte
             new_path = subbed
             new_state = True
 
+        # Re-apply the generation-time ⚡ speed factor: base/subbed are stored
+        # unsped (they're needed for editing/re-burning), so without this the
+        # toggle would silently show an unsped video and lose the speed effect.
+        speed = float(data.get("applied_speed") or 1.0)
+        if speed != 1.0:
+            cache_key = "video_path_subbed_sped" if new_state else "video_path_base_sped"
+            cached = data.get(cache_key)
+            if cached and os.path.exists(cached):
+                new_path = cached
+            else:
+                await callback.message.answer(f"⚡ Applying {speed:g}× speed…")
+                gemini = container.inject(GeminiService)
+                sped = await gemini.apply_speed(new_path, speed)
+                await state.update_data(**{cache_key: sped})
+                new_path = sped
+
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:
@@ -811,13 +850,18 @@ async def handle_video_edit_prompt(message: Message, state: FSMContext):
             raise FileNotFoundError(f"Edited video not found: {edited_path}")
 
         await message.answer_video(FSInputFile(edited_path), caption="video")
-        # Replace base video with edited version; keep subtitles state
+        # Replace base video with edited version; keep subtitles state.
+        # Speed caches belong to the PREVIOUS video — reset them, and the
+        # edited video itself is unsped (applied_speed=1.0).
         await state.update_data(
             video_path=edited_path,
             video_path_base=edited_path,
             video_path_raw=edited_path,
             video_path_subbed=None,
             subtitles_on=False,
+            applied_speed=1.0,
+            video_path_base_sped=None,
+            video_path_subbed_sped=None,
         )
         await message.answer("✅ Edit applied!\nContinue?", reply_markup=get_video_keyboard(False))
     except Exception as e:
