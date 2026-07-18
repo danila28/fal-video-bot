@@ -6,6 +6,12 @@ Supported models (set via settings video_model):
   seedance_mini     → Seedance 2.0 Mini  Image-to-Video
   seedance_t2v      → Seedance 2.0       Text-to-Video
   seedance_mini_t2v → Seedance 2.0 Mini  Text-to-Video
+  seedance_ref      → Seedance 2.0       Reference-to-Video
+  seedance_fast_ref → Seedance 2.0 Fast  Reference-to-Video
+
+Reference-to-Video uses `image_urls` (array) with `@Image1..N` tags in the
+prompt; every clip receives ALL reference images and last-frame stitching is
+skipped (the references anchor character identity, not the starting frame).
 
 Clip duration: up to 15 s per Atlas call for all Seedance variants.
 """
@@ -26,6 +32,8 @@ _T2V       = "bytedance/seedance-2.0/text-to-video"
 _FAST_I2V  = "bytedance/seedance-2.0-fast/image-to-video"
 _MINI_I2V  = "bytedance/seedance-2.0-mini/image-to-video"
 _MINI_T2V  = "bytedance/seedance-2.0-mini/text-to-video"
+_REF       = "bytedance/seedance-2.0/reference-to-video"
+_FAST_REF  = "bytedance/seedance-2.0-fast/reference-to-video"
 
 # Backwards-compat aliases
 _MODEL_IMAGE_TO_VIDEO = _I2V
@@ -49,6 +57,8 @@ MODEL_IDS: dict[str, str] = {
     "seedance_fast":      _FAST_I2V,
     "seedance_mini":      _MINI_I2V,
     "seedance_mini_t2v":  _MINI_T2V,
+    "seedance_ref":       _REF,
+    "seedance_fast_ref":  _FAST_REF,
 }
 
 # Human-readable labels used in notify messages
@@ -58,7 +68,11 @@ MODEL_LABELS: dict[str, str] = {
     "seedance_fast":      "Seedance 2.0 Fast",
     "seedance_mini":      "Seedance 2.0 Mini",
     "seedance_mini_t2v":  "Seedance 2.0 Mini T2V",
+    "seedance_ref":       "Seedance 2.0 Reference",
+    "seedance_fast_ref":  "Seedance 2.0 Fast Reference",
 }
+
+_REFERENCE_MODELS = {_REF, _FAST_REF}
 
 
 class SeedanceService:
@@ -96,24 +110,44 @@ class SeedanceService:
         os.makedirs(self.static_dir, exist_ok=True)
         duration = max(4, min(_MAX_CALL_DURATION, duration))
         resolution = _normalize_resolution(model_id, resolution)
+        is_reference = model_id in _REFERENCE_MODELS
 
         # image_urls takes priority over image_url
         effective_urls = image_urls if image_urls else ([image_url] if image_url else [])
 
         if effective_urls:
             model = model_id
-            params = {
-                "prompt": prompt,
-                "image_url": effective_urls[0],
-                "duration": duration,
-                "ratio": aspect_ratio,
-                "resolution": resolution,
-                "generate_audio": keep_native_audio,
-            }
+            if is_reference:
+                # Reference mode: array of images + @ImageN tags in the prompt
+                tags = " ".join(f"@Image{i + 1}" for i in range(len(effective_urls)))
+                ref_prompt = (
+                    f"{tags} {prompt}"
+                    if not any(f"@Image{i + 1}" in prompt for i in range(len(effective_urls)))
+                    else prompt
+                )
+                params = {
+                    "prompt": ref_prompt,
+                    "image_urls": effective_urls,
+                    "duration": duration,
+                    "aspect_ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "generate_audio": keep_native_audio,
+                }
+            else:
+                params = {
+                    "prompt": prompt,
+                    "image_url": effective_urls[0],
+                    "duration": duration,
+                    "ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "generate_audio": keep_native_audio,
+                }
         else:
             model = (
                 model_id if "text-to-video" in model_id
-                else model_id.replace("/image-to-video", "/text-to-video")
+                else model_id
+                .replace("/image-to-video", "/text-to-video")
+                .replace("/reference-to-video", "/text-to-video")
             )
             params = {
                 "prompt": prompt,
@@ -195,15 +229,19 @@ class SeedanceService:
         resolution: str = "720p",
         model_id: str = _I2V,
         keep_native_audio: bool = False,
+        all_reference_urls: list[str] | None = None,
     ) -> list[str]:
         """Generate multiple clips.
 
-        Extracts the last frame after each clip and uses it as the anchor for
-        the next clip (visual continuity). `anchor_photo_urls` cycles through
-        multiple images when provided.
+        I2V models: extracts the last frame after each clip and uses it as the
+        anchor for the next clip (visual continuity). `anchor_photo_urls`
+        cycles through multiple images when provided.
+        Reference models: pass `all_reference_urls` — every clip receives ALL
+        reference images; last-frame stitching is skipped.
         clip_duration: single value for every clip, or a per-clip list.
         keep_native_audio: see generate_clip.
         """
+        is_reference = model_id in _REFERENCE_MODELS
         clips: list[str] = []
         durations = (
             clip_duration if isinstance(clip_duration, list)
@@ -214,18 +252,37 @@ class SeedanceService:
             logger.info(f"Generating Seedance clip {i + 1}/{len(scene_prompts)}")
             dur = durations[i] if i < len(durations) else durations[-1]
 
-            clip_path = await self.generate_clip(
-                prompt=prompt,
-                image_url=photo_url,
-                duration=dur,
-                resolution=resolution,
-                model_id=model_id,
-                keep_native_audio=keep_native_audio,
-            )
+            if is_reference and i > 0:
+                effective_prompt = (
+                    "Seamlessly continuing from previous scene — "
+                    "same lighting, same background, same camera angle, smooth action flow. "
+                    + prompt
+                )
+            else:
+                effective_prompt = prompt
+
+            if is_reference and all_reference_urls:
+                clip_path = await self.generate_clip(
+                    prompt=effective_prompt,
+                    image_urls=all_reference_urls,
+                    duration=dur,
+                    resolution=resolution,
+                    model_id=model_id,
+                    keep_native_audio=keep_native_audio,
+                )
+            else:
+                clip_path = await self.generate_clip(
+                    prompt=effective_prompt,
+                    image_url=photo_url,
+                    duration=dur,
+                    resolution=resolution,
+                    model_id=model_id,
+                    keep_native_audio=keep_native_audio,
+                )
             clips.append(clip_path)
 
-            # Last-frame continuity (visual flow between consecutive clips)
-            if i < len(scene_prompts) - 1:
+            # Last-frame continuity (I2V only — references anchor identity instead)
+            if not is_reference and i < len(scene_prompts) - 1:
                 frame_path = await self._extract_last_frame(clip_path)
                 if frame_path:
                     frame_url = await self.upload_photo(frame_path)

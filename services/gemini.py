@@ -75,6 +75,8 @@ class GeminiService:
             {"name": "seedance_mini",      "price": "🖼💰 Seedance Mini I2V · $0.045/s"},
             {"name": "seedance_t2v",       "price": "📝 Seedance T2V · $0.08/s"},
             {"name": "seedance_mini_t2v",  "price": "📝💰 Seedance Mini T2V · $0.045/s"},
+            {"name": "seedance_ref",       "price": "🎭 Seedance Ref · $0.08/s"},
+            {"name": "seedance_fast_ref",  "price": "🎭⚡ Seedance Fast Ref · $0.05/s"},
             {"separator": True, "label": "── Kling ──"},
             {"name": "kling",              "price": "🖼 Kling v3 Pro I2V · $0.10/s"},
             {"name": "kling_v3_std",       "price": "🖼 Kling v3 Std I2V · $0.07/s"},
@@ -83,6 +85,7 @@ class GeminiService:
             {"name": "kling_o3_std",       "price": "🖼 Kling O3 Std I2V · $0.10/s"},
             {"name": "kling_t2v",          "price": "📝 Kling v3 Pro T2V · $0.10/s"},
             {"name": "kling_turbo_t2v",    "price": "📝⚡ Kling v3 Turbo T2V · $0.05/s"},
+            {"name": "kling_o3_pro_ref",   "price": "🎭 Kling O3 Pro Ref · $0.14/s"},
         ]
 
     # ── Text generation ────────────────────────────────────────────────────

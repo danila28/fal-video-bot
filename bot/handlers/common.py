@@ -284,6 +284,7 @@ async def _generate_seedance(
         transitions = None
 
     is_t2v = model in _T2V_VIDEO_MODELS
+    is_ref = model.endswith("_ref")
 
     # Native model audio: for the ASMR niche the model's own synchronized sound
     # IS the content (TTS mixed quietly on top); and when there is no voiceover
@@ -294,7 +295,32 @@ async def _generate_seedance(
         or not bool(voiceover_text and voiceover_text.strip())
     )
 
-    if not is_t2v and valid_paths:
+    # ── Reference-to-Video: all photos anchor every clip, no last-frame stitching ──
+    if is_ref and valid_paths:
+        uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
+        if len(scenes) > 1:
+            durations = _add_crossfade_padding(durations, joints=len(scenes) - 1, max_dur=15)
+        await notify(
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
+            + f", {len(valid_paths)} ref photo(s)"
+            + (", native audio" if keep_native else "")
+            + ") — each clip takes ~3-5 min…"
+        )
+        clips = await seedance.generate_clips(
+            scene_prompts=scenes,
+            anchor_photo_urls=[uploaded_urls[0]] * len(scenes),
+            clip_duration=durations,
+            resolution=resolution,
+            model_id=atlas_model_id,
+            keep_native_audio=keep_native,
+            all_reference_urls=uploaded_urls,
+        )
+        concat_transitions = transitions[:-1] if transitions else None
+        raw_video = (
+            await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
+            if len(clips) > 1 else clips[0]
+        )
+    elif not is_t2v and valid_paths:
         uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
         total_dur = sum(durations)
 
@@ -427,6 +453,7 @@ async def _generate_kling(
         shot_transitions = None
 
     is_t2v = model in _T2V_VIDEO_MODELS
+    is_ref = model.endswith("_ref")
 
     # Model-generated audio: always for the ASMR niche (sound IS the content),
     # otherwise only when there is no voiceover to lay on top of silence.
@@ -509,6 +536,31 @@ async def _generate_kling(
 
         raw_video = (
             await gemini.concat_videos(clips, crossfade=0.5, transitions=batch_transitions)
+            if len(clips) > 1 else clips[0]
+        )
+
+    # ── Reference-to-Video (O3 Pro Ref): all photos anchor every clip ────────
+    elif is_ref and valid_paths:
+        uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
+        if len(scenes) > 1:
+            shot_durations_list = _add_crossfade_padding(
+                shot_durations_list, joints=len(scenes) - 1, max_dur=10
+            )
+        await notify(
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
+            + f", {len(valid_paths)} ref photo(s)"
+            + ") — each clip takes ~2-4 min…"
+        )
+        clips = await kling.generate_clips(
+            scene_prompts=scenes,
+            anchor_photo_urls=[uploaded_urls[0]] * len(scenes),
+            clip_duration=shot_durations_list,
+            model_id=atlas_model_id,
+            all_reference_urls=uploaded_urls,
+        )
+        concat_transitions = shot_transitions[:-1] if shot_transitions else None
+        raw_video = (
+            await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
             if len(clips) > 1 else clips[0]
         )
 
