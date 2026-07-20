@@ -25,6 +25,8 @@ class GenerationState(StatesGroup):
     RAW_PROMPT = State()
     OWN_SCRIPT = State()
     ENHANCE_PROMPT = State()
+    SELECT_REF_MODE = State()
+    ENTER_REF_IMAGES = State()
     CONFIRM_IMAGE = State()
     CONFIRM_VIDEO_PROMPT = State()
     EDIT_SCENE = State()

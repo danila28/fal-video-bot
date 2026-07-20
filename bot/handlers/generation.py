@@ -21,6 +21,7 @@ from bot.keyboards import (
     get_persistent_keyboard,
     get_prompt_keyboard,
     get_publish_keyboard,
+    get_ref_image_mode_keyboard,
     get_video_keyboard,
     get_video_prompt_keyboard,
     GENERATE_BUTTON_TEXT,
@@ -52,18 +53,29 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
-async def _send_image_preview(message, image_paths: list[str]) -> None:
-    """Send generated images as a media group (album) or single photo."""
+def _is_reference_model(video_model: str) -> bool:
+    """Check if the video model is a reference-to-video model."""
+    video_model = (video_model or "").lower()
+    return video_model.endswith("_ref")
+
+
+async def _send_image_preview(message, image_paths: list[str], captions: list[str] | None = None) -> None:
+    """Send generated images as a media group (album) or single photo.
+
+    captions: optional list of captions to use instead of default numbering.
+    """
     valid = [p for p in image_paths if os.path.exists(p)]
     if not valid:
         return
+    captions = captions or []
     if len(valid) == 1:
-        await message.answer_photo(FSInputFile(valid[0]), caption="image")
+        caption = captions[0] if captions else "image"
+        await message.answer_photo(FSInputFile(valid[0]), caption=caption)
         return
     media = [
         InputMediaPhoto(
             media=FSInputFile(p),
-            caption=f"image {i + 1}/{len(valid)}" if i == 0 else None,
+            caption=captions[i] if i < len(captions) else (f"photo {i + 1}/{len(valid)}" if i == 0 else None),
         )
         for i, p in enumerate(valid)
     ]
@@ -244,14 +256,223 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
 @router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_ok", IsAllowed(allowed_users))
 async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
     """Prompt OK → for T2V models skip image and go straight to video prompt;
-    for I2V models generate image and show for review."""
-    # Guard against double-taps — otherwise two parallel pipelines start.
+    for reference models show mode selection; for I2V models generate image."""
     if await _is_generating(state):
         await callback.answer("Already generating — please wait.", show_alert=False)
         return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
+
+    db = container.inject(DBService)
+    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    video_model = settings.get("video_model") or ""
+
+    # Reference models: show mode selection before image generation
+    if _is_reference_model(video_model):
+        image_count = int(settings.get("image_count", 1))
+        if image_count > 1:
+            await callback.message.answer(
+                f"You selected {image_count} reference photos.\n\nHow would you like to describe them?",
+                reply_markup=get_ref_image_mode_keyboard(),
+            )
+            await state.set_state(GenerationState.SELECT_REF_MODE)
+            return
+
     await _proceed_to_media(callback.message, state, callback.from_user.id, callback.message.chat.id)
+
+
+# ─────────────────────────────────────────────
+# REFERENCE IMAGE MODES (manual + auto for reference models)
+# ─────────────────────────────────────────────
+
+@router.callback_query(GenerationState.SELECT_REF_MODE, lambda c: c.data.startswith("ref_mode:"), IsAllowed(allowed_users))
+async def handle_ref_mode_select(callback: CallbackQuery, state: FSMContext):
+    """Handle selection between manual descriptions or auto mode."""
+    mode = callback.data.split(":", 1)[1]  # 'manual' or 'auto'
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    db = container.inject(DBService)
+    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    image_count = int(settings.get("image_count", 1))
+
+    if mode == "manual":
+        await state.update_data(
+            ref_mode="manual",
+            ref_descriptions=[],
+            ref_current_index=0,
+        )
+        await callback.message.answer(f"📝 Photo 1 of {image_count}: describe it (min. 15 chars)")
+        await state.set_state(GenerationState.ENTER_REF_IMAGES)
+    else:  # auto mode
+        await state.update_data(ref_mode="auto")
+        await callback.message.answer("🤖 Generating descriptions...")
+        await _proceed_to_ref_auto(callback.message, state, callback.from_user.id, callback.message.chat.id)
+
+
+@router.message(GenerationState.ENTER_REF_IMAGES, IsAllowed(allowed_users))
+async def handle_ref_image_description(message: Message, state: FSMContext):
+    """Collect sequential image descriptions for manual mode."""
+    data = await state.get_data()
+    descriptions = data.get("ref_descriptions", [])
+    current_idx = data.get("ref_current_index", 0)
+
+    db = container.inject(DBService)
+    settings = await db.get_settings(message.from_user.id, message.chat.id)
+    image_count = int(settings.get("image_count", 1))
+
+    desc_text = (message.text or "").strip()
+    if len(desc_text) < 15:
+        await message.answer("❌ Description too short — send at least 15 characters.")
+        return
+
+    descriptions.append(desc_text)
+    current_idx += 1
+
+    if current_idx >= image_count:
+        # All descriptions collected
+        await state.update_data(ref_descriptions=descriptions, ref_current_index=current_idx)
+        await message.answer("⏳ Generating images…")
+        await _proceed_to_ref_manual(message, state, message.from_user.id, message.chat.id)
+    else:
+        # Ask for next description
+        await state.update_data(ref_descriptions=descriptions, ref_current_index=current_idx)
+        await message.answer(f"📝 Photo {current_idx + 1} of {image_count}: describe it (min. 15 chars)")
+
+
+async def _proceed_to_ref_manual(message: Message, state: FSMContext, user_id: int, chat_id: int):
+    """Generate images from manual descriptions."""
+    db = container.inject(DBService)
+    settings = await db.get_settings(user_id, chat_id)
+    data = await state.get_data()
+    descriptions = data.get("ref_descriptions", [])
+    video_model = settings.get("video_model") or ""
+    enhance_prompt = data.get("enhance_prompt", "")
+
+    if not descriptions:
+        await message.answer("❌ No descriptions provided.")
+        await state.set_state(GenerationState.ENHANCE_PROMPT)
+        return
+
+    await state.update_data(generation_in_progress=True, generation_started_at=time.time())
+
+    try:
+        imagegen = container.inject(ImageGenService)
+        image_paths = await imagegen.generate_from_prompts(
+            prompts=descriptions,
+            model=settings.get("image_model") or "",
+            video_model=video_model or "seedance",
+            notify=message.answer,
+        )
+
+        captions = [f"Photo {i + 1}/{len(descriptions)}" for i in range(len(descriptions))]
+        await state.update_data(
+            image_paths=image_paths,
+            image_prompt="",
+            ref_mode="manual",
+            ref_descriptions=descriptions,
+        )
+        await _send_image_preview(message, image_paths, captions=captions)
+        await message.answer("Images created. Continue?", reply_markup=get_image_keyboard())
+        await state.set_state(GenerationState.CONFIRM_IMAGE)
+    except Exception as e:
+        logger.error(f"Reference image generation failed (manual): {e}")
+        await message.answer(
+            f"❌ Image generation failed: {e}\nTry again.",
+            reply_markup=get_prompt_keyboard(),
+        )
+        await state.set_state(GenerationState.ENHANCE_PROMPT)
+    finally:
+        await state.update_data(generation_in_progress=False)
+
+
+async def _proceed_to_ref_auto(message: Message, state: FSMContext, user_id: int, chat_id: int):
+    """Generate reference images via LLM auto mode."""
+    db = container.inject(DBService)
+    settings = await db.get_settings(user_id, chat_id)
+    data = await state.get_data()
+    enhance_prompt = data.get("enhance_prompt", "")
+    image_count = int(settings.get("image_count", 1))
+    video_model = settings.get("video_model") or ""
+
+    await state.update_data(generation_in_progress=True, generation_started_at=time.time())
+
+    try:
+        gemini = container.inject(GeminiService)
+        from utils.presets import get_image_tag_template, parse_ref_images_auto_json
+
+        tag_template = get_image_tag_template(video_model)
+        tag_examples = ", ".join([tag_template.format(i=i+1) for i in range(min(image_count, 2))])
+
+        llm_prompt = (
+            f"Based on this concept: {enhance_prompt}\n\n"
+            f"Generate {image_count} complementary image prompts for reference-to-video generation.\n"
+            f"The images will be used together in a video, so create different but complementary roles/elements.\n\n"
+            f"Return ONLY valid JSON (no markdown fences):\n"
+            "{{\n"
+            '  "roles": [\n'
+            '    {{"index": 1, "role": "Main subject", "description": "..."}},\n'
+            "    ...\n"
+            "  ],\n"
+            f'  "image_prompts": ["prompt 1", "prompt 2", ...],  // {image_count} different prompts\n'
+            '  "combination_plan": "How these elements should appear across shots..."\n'
+            "}\n\n"
+            f"Image tags available in scene prompts: {tag_examples}, etc."
+        )
+
+        text_model = settings.get("text_model") or ""
+        response = await gemini.generate_text(
+            llm_prompt,
+            "You are a creative director. Generate image descriptions that will work well together as reference images.",
+            text_model,
+        )
+
+        parsed = parse_ref_images_auto_json(response)
+        if parsed is None:
+            await message.answer(
+                "❌ Failed to parse auto mode response. Try manual mode instead.",
+                reply_markup=get_prompt_keyboard(),
+            )
+            await state.set_state(GenerationState.ENHANCE_PROMPT)
+            return
+
+        imagegen = container.inject(ImageGenService)
+        image_prompts = parsed.get("image_prompts", [])[:image_count]
+        image_paths = await imagegen.generate_from_prompts(
+            prompts=image_prompts,
+            model=settings.get("image_model") or "",
+            video_model=video_model or "seedance",
+            notify=message.answer,
+        )
+
+        roles = parsed.get("roles", [])
+        captions = [
+            f"{role.get('role', f'Photo {i+1}')}"
+            for i, role in enumerate(roles[:len(image_paths)])
+        ]
+        for i in range(len(image_paths) - len(captions)):
+            captions.append(f"Photo {len(captions) + 1}")
+
+        await state.update_data(
+            image_paths=image_paths,
+            image_prompt="",
+            ref_mode="auto",
+            ref_roles=parsed.get("roles", []),
+            ref_combination_plan=parsed.get("combination_plan", ""),
+            ref_image_prompts=image_prompts,
+        )
+        await _send_image_preview(message, image_paths, captions=captions)
+        await message.answer("Images created. Continue?", reply_markup=get_image_keyboard())
+        await state.set_state(GenerationState.CONFIRM_IMAGE)
+    except Exception as e:
+        logger.error(f"Reference image generation failed (auto): {e}")
+        await message.answer(
+            f"❌ Auto mode failed: {e}\nTry manual mode instead.",
+            reply_markup=get_prompt_keyboard(),
+        )
+        await state.set_state(GenerationState.ENHANCE_PROMPT)
+    finally:
+        await state.update_data(generation_in_progress=False)
 
 
 # ─────────────────────────────────────────────
@@ -425,10 +646,14 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         enhance_prompt = data.get("enhance_prompt", "")
 
+        # Reference image context for system prompt
+        ref_roles = data.get("ref_roles") if data.get("ref_mode") == "auto" else None
+        ref_plan = data.get("ref_combination_plan", "") if data.get("ref_mode") == "auto" else ""
+
         await callback.message.answer("⏳ Generating video prompt…")
         text_model = settings.get("text_model") or ""
         video_prompt, hashtags = await asyncio.gather(
-            _build_video_prompt(enhance_prompt, settings, gemini),
+            _build_video_prompt(enhance_prompt, settings, gemini, ref_roles=ref_roles, ref_combination_plan=ref_plan),
             gemini.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
         )
 
@@ -494,9 +719,12 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
         data = await state.get_data()
         await callback.message.answer("⏳ Regenerating scene…")
+        ref_roles = data.get("ref_roles") if data.get("ref_mode") == "auto" else None
+        ref_plan = data.get("ref_combination_plan", "") if data.get("ref_mode") == "auto" else ""
         video_prompt = await _build_video_prompt(
             data.get("enhance_prompt", ""), settings, gemini,
             strict_script=bool(data.get("own_script")),
+            ref_roles=ref_roles, ref_combination_plan=ref_plan,
         )
         new_scene, _ = _split_video_prompt(video_prompt, gemini)
         voiceover = data.get("video_voiceover", "")
@@ -521,9 +749,12 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
         data = await state.get_data()
         await callback.message.answer("⏳ Regenerating voiceover…")
+        ref_roles = data.get("ref_roles") if data.get("ref_mode") == "auto" else None
+        ref_plan = data.get("ref_combination_plan", "") if data.get("ref_mode") == "auto" else ""
         video_prompt = await _build_video_prompt(
             data.get("enhance_prompt", ""), settings, gemini,
             strict_script=bool(data.get("own_script")),
+            ref_roles=ref_roles, ref_combination_plan=ref_plan,
         )
         _, new_voiceover = _split_video_prompt(video_prompt, gemini)
         scene = data.get("video_scene", "")

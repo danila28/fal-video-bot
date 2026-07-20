@@ -131,6 +131,24 @@ class ImageGenService:
         tasks = [self.generate(prompt, model, video_model, notify) for _ in range(count)]
         return list(await asyncio.gather(*tasks))
 
+    async def generate_from_prompts(
+        self,
+        prompts: list[str],
+        model: str = "",
+        video_model: str = "seedance",
+        notify=None,
+    ) -> list[str]:
+        """Generate different images from different prompts in parallel.
+
+        Returns list of local file paths (same order as input prompts).
+        """
+        if not prompts:
+            return []
+        prompts = prompts[:4]  # Max 4 images
+        model = model or self._DEFAULT_MODEL
+        tasks = [self.generate(p, model, video_model, notify) for p in prompts]
+        return list(await asyncio.gather(*tasks))
+
     async def generate(
         self,
         prompt: str,

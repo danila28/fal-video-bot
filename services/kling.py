@@ -126,8 +126,13 @@ class KlingService:
         if effective_urls:
             model = model_id
             if is_reference:
+                # Reference model: inject <<<element_N>>> tags if not already present
+                ref_prompt = prompt
+                if not any(f"<<<element_{i + 1}>>>" in prompt for i in range(len(effective_urls))):
+                    tags = " ".join(f"<<<element_{i + 1}>>>" for i in range(len(effective_urls)))
+                    ref_prompt = f"{tags} {prompt}"
                 params: dict = {
-                    "prompt": prompt,
+                    "prompt": ref_prompt,
                     "images": effective_urls[:7],  # Atlas caps reference images at 7
                     "duration": duration,
                     "aspect_ratio": aspect_ratio,

@@ -881,13 +881,20 @@ _STRICT_SCRIPT_SYS = (
 
 
 async def _build_video_prompt(
-    enhance_prompt: str, settings: dict, gemini: GeminiService, strict_script: bool = False
+    enhance_prompt: str,
+    settings: dict,
+    gemini: GeminiService,
+    strict_script: bool = False,
+    ref_roles: list[dict] | None = None,
+    ref_combination_plan: str = "",
 ) -> str:
     """Generate video script as structured JSON. Falls back to text format on parse failure.
 
     strict_script=True (own-script mode): the user's text is treated as a final
     script — the niche preset's video prompt is ignored and a hard preamble
     forbids inventing new content; the model only structures the text into shots.
+    ref_roles: list of {"index": N, "role": "...", "description": "..."} for reference images
+    ref_combination_plan: how to combine reference images across shots
     """
     base_sys = (
         _STRICT_SCRIPT_SYS if strict_script
@@ -919,6 +926,22 @@ async def _build_video_prompt(
     scene_prompt_rule = "scene_prompt: English ONLY, describe VISUALS only — no camera directions here, no spoken text. Max 55 words per shot"
     camera_motion_rule = "camera_motion: 3-8 words, camera movement for THIS shot only (e.g. 'slow push-in', 'pan left', 'static wide', 'crane up', 'orbit right')"
 
+    # Build reference image context if provided
+    ref_images_context = ""
+    if ref_roles and ref_combination_plan:
+        from utils.presets import get_image_tag_template
+        tag_template = get_image_tag_template(video_model)
+        ref_desc = "\n\nREFERENCE IMAGES AVAILABLE:\n"
+        for role in ref_roles:
+            idx = role.get("index", 1)
+            role_name = role.get("role", f"Image {idx}")
+            description = role.get("description", "")
+            tag = tag_template.format(i=idx)
+            ref_desc += f"- {tag} ({role_name}): {description}\n"
+        ref_desc += f"\nIMAGE COMBINATION PLAN:\n{ref_combination_plan}\n"
+        ref_desc += f"\nWhen writing scene_prompt, explicitly reference available images using their tags ({tag_template.format(i=1)}, {tag_template.format(i=2)}, etc.) at moments where they should appear or be visible."
+        ref_images_context = ref_desc
+
     _JSON_SYS = (
         "Output ONLY valid JSON. No prose. No markdown fences. Schema:\n"
         "{\n"
@@ -949,7 +972,7 @@ async def _build_video_prompt(
         f"- Total: {n_clips} shot(s), EXACTLY {actual_duration}s\n"
     )
 
-    sys_prompt = (base_sys + "\n\n" + _JSON_SYS) if base_sys else _JSON_SYS
+    sys_prompt = (base_sys + ref_images_context + "\n\n" + _JSON_SYS) if base_sys else (_JSON_SYS if not ref_images_context else ref_images_context + "\n\n" + _JSON_SYS)
     raw = await gemini.generate_text(
         enhance_prompt,
         sys_prompt,

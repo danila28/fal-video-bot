@@ -272,3 +272,13 @@ def get_image_count_keyboard(current: int = 1):
             text=f"{mark}{desc}", callback_data=f"settings:image_count:{val}"
         )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_ref_image_mode_keyboard():
+    """For reference models: choose between manual input and auto mode."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Own descriptions", callback_data="ref_mode:manual")],
+            [InlineKeyboardButton(text="🤖 Bot decides", callback_data="ref_mode:auto")],
+        ]
+    )

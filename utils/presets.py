@@ -405,3 +405,60 @@ def parse_custom_niche_json(text: str) -> tuple[str, str] | None:
     if not isinstance(image, str) or not image.strip():
         image = DEFAULT_IMAGE_PROMPT
     return plot.strip(), image.strip()
+
+
+def get_image_tag_template(video_model: str) -> str:
+    """Return image tag template for reference models.
+
+    Seedance uses @Image{i} (1-indexed), Kling O3 Pro Ref uses <<<element_{i}>>> (1-indexed).
+    """
+    if video_model.startswith("seedance"):
+        return "@Image{i}"
+    elif video_model.startswith("kling"):
+        return "<<<element_{i}>>>"
+    return "@Image{i}"  # fallback
+
+
+def parse_ref_images_auto_json(text: str) -> dict | None:
+    """Parse LLM response for auto reference images mode.
+
+    Expected format:
+    {
+        "roles": [
+            {"index": 1, "role": "Hero character", "description": "..."},
+            {"index": 2, "role": "Settings", "description": "..."},
+            ...
+        ],
+        "image_prompts": ["prompt 1", "prompt 2", ...],
+        "combination_plan": "Hero appears at start, settings as background, etc."
+    }
+    Returns None on failure.
+    """
+    cleaned = re.sub(r"^```(?:json)?\s*\n?", "", text.strip(), flags=re.MULTILINE)
+    cleaned = re.sub(r"\n?```\s*$", "", cleaned.strip(), flags=re.MULTILINE)
+    try:
+        data = json.loads(cleaned.strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    roles = data.get("roles")
+    prompts = data.get("image_prompts")
+    plan = data.get("combination_plan")
+
+    if not isinstance(roles, list) or not roles:
+        return None
+    if not isinstance(prompts, list) or not prompts:
+        return None
+    if not isinstance(plan, str) or not plan.strip():
+        return None
+
+    if len(prompts) != len(roles):
+        return None
+
+    return {
+        "roles": roles,
+        "image_prompts": [p.strip() for p in prompts if isinstance(p, str) and p.strip()],
+        "combination_plan": plan.strip(),
+    }
