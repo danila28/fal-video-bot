@@ -887,14 +887,16 @@ async def _build_video_prompt(
     strict_script: bool = False,
     ref_roles: list[dict] | None = None,
     ref_combination_plan: str = "",
+    ref_descriptions: list[str] | None = None,
 ) -> str:
     """Generate video script as structured JSON. Falls back to text format on parse failure.
 
     strict_script=True (own-script mode): the user's text is treated as a final
     script — the niche preset's video prompt is ignored and a hard preamble
     forbids inventing new content; the model only structures the text into shots.
-    ref_roles: list of {"index": N, "role": "...", "description": "..."} for reference images
-    ref_combination_plan: how to combine reference images across shots
+    ref_roles: list of {"index": N, "role": "...", "description": "..."} for auto mode
+    ref_combination_plan: how to combine reference images (auto mode)
+    ref_descriptions: user-provided descriptions for manual mode
     """
     base_sys = (
         _STRICT_SCRIPT_SYS if strict_script
@@ -929,9 +931,10 @@ async def _build_video_prompt(
     # Build reference image context if provided
     ref_images_context = ""
     if ref_roles and ref_combination_plan:
+        # Auto mode: LLM-generated roles + plan
         from utils.presets import get_image_tag_template
         tag_template = get_image_tag_template(video_model)
-        ref_desc = "\n\nREFERENCE IMAGES AVAILABLE:\n"
+        ref_desc = "\n\nREFERENCE IMAGES AVAILABLE (AUTO MODE):\n"
         for role in ref_roles:
             idx = role.get("index", 1)
             role_name = role.get("role", f"Image {idx}")
@@ -940,6 +943,16 @@ async def _build_video_prompt(
             ref_desc += f"- {tag} ({role_name}): {description}\n"
         ref_desc += f"\nIMAGE COMBINATION PLAN:\n{ref_combination_plan}\n"
         ref_desc += f"\nWhen writing scene_prompt, explicitly reference available images using their tags ({tag_template.format(i=1)}, {tag_template.format(i=2)}, etc.) at moments where they should appear or be visible."
+        ref_images_context = ref_desc
+    elif ref_descriptions:
+        # Manual mode: user-provided descriptions
+        from utils.presets import get_image_tag_template
+        tag_template = get_image_tag_template(video_model)
+        ref_desc = "\n\nREFERENCE IMAGES AVAILABLE (MANUAL MODE):\n"
+        for i, desc in enumerate(ref_descriptions, 1):
+            tag = tag_template.format(i=i)
+            ref_desc += f"- {tag}: {desc}\n"
+        ref_desc += f"\nWhen writing scene_prompt, reference the images using their tags ({tag_template.format(i=1)}, {tag_template.format(i=2)}, etc.) where they should appear in the shots."
         ref_images_context = ref_desc
 
     _JSON_SYS = (
@@ -1076,6 +1089,29 @@ async def _build_image_prompt(
         base_sys + IMAGE_SYS_SUFFIX,
         settings.get("text_model") or "",
     )
+
+
+async def _build_ref_image_prompts(
+    descriptions: list[str],
+    settings: dict,
+    gemini: GeminiService,
+    strict_script: bool = False,
+) -> list[str]:
+    """Turn user-provided per-photo descriptions (reference manual mode) into
+    styled image-gen prompts — runs each description through the SAME niche
+    system_image_prompt used by the single-image path, in parallel, so
+    reference photos match the preset's visual style instead of being sent
+    to the image model as raw user text.
+    """
+    from utils.presets import DEFAULT_IMAGE_PROMPT, IMAGE_SYS_SUFFIX
+    if strict_script:
+        base_sys = _STRICT_IMAGE_SYS
+    else:
+        base_sys = settings.get("system_image_prompt") or DEFAULT_IMAGE_PROMPT
+    sys_prompt = base_sys + IMAGE_SYS_SUFFIX
+    text_model = settings.get("text_model") or ""
+    tasks = [gemini.generate_text(desc, sys_prompt, text_model) for desc in descriptions]
+    return list(await asyncio.gather(*tasks))
 
 
 # ── Helpers reused across handlers ──────────────────────────────────────────
