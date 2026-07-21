@@ -129,7 +129,7 @@ class SeedanceService:
                     "prompt": ref_prompt,
                     "image_urls": effective_urls,
                     "duration": duration,
-                    "aspect_ratio": aspect_ratio,
+                    "ratio": aspect_ratio,  # same key as I2V/T2V — "aspect_ratio" is not a Seedance Atlas param
                     "resolution": resolution,
                     "generate_audio": keep_native_audio,
                 }
@@ -227,6 +227,7 @@ class SeedanceService:
         anchor_photo_urls: list[str],
         clip_duration: int | list[int] = 10,
         resolution: str = "720p",
+        aspect_ratio: str = "9:16",
         model_id: str = _I2V,
         keep_native_audio: bool = False,
         all_reference_urls: list[str] | None = None,
@@ -239,6 +240,7 @@ class SeedanceService:
         Reference models: pass `all_reference_urls` — every clip receives ALL
         reference images; last-frame stitching is skipped.
         clip_duration: single value for every clip, or a per-clip list.
+        aspect_ratio: video format (default "9:16" for vertical).
         keep_native_audio: see generate_clip.
         """
         is_reference = model_id in _REFERENCE_MODELS
@@ -266,6 +268,7 @@ class SeedanceService:
                     prompt=effective_prompt,
                     image_urls=all_reference_urls,
                     duration=dur,
+                    aspect_ratio=aspect_ratio,
                     resolution=resolution,
                     model_id=model_id,
                     keep_native_audio=keep_native_audio,
@@ -275,6 +278,7 @@ class SeedanceService:
                     prompt=effective_prompt,
                     image_url=photo_url,
                     duration=dur,
+                    aspect_ratio=aspect_ratio,
                     resolution=resolution,
                     model_id=model_id,
                     keep_native_audio=keep_native_audio,

@@ -311,6 +311,7 @@ async def _generate_seedance(
             anchor_photo_urls=[uploaded_urls[0]] * len(scenes),
             clip_duration=durations,
             resolution=resolution,
+            aspect_ratio="9:16",
             model_id=atlas_model_id,
             keep_native_audio=keep_native,
             all_reference_urls=uploaded_urls,
@@ -359,6 +360,7 @@ async def _generate_seedance(
                 anchor_photo_urls=anchor_urls,
                 clip_duration=durations,
                 resolution=resolution,
+                aspect_ratio="9:16",
                 model_id=atlas_model_id,
                 keep_native_audio=keep_native,
             )
@@ -555,6 +557,7 @@ async def _generate_kling(
             scene_prompts=scenes,
             anchor_photo_urls=[uploaded_urls[0]] * len(scenes),
             clip_duration=shot_durations_list,
+            aspect_ratio="9:16",
             model_id=atlas_model_id,
             all_reference_urls=uploaded_urls,
         )
@@ -607,6 +610,7 @@ async def _generate_kling(
                 scene_prompts=scenes,
                 anchor_photo_urls=anchor_urls,
                 clip_duration=shot_durations_list,
+                aspect_ratio="9:16",
                 negative_prompt=negative_prompt,
                 model_id=atlas_model_id,
             )
@@ -942,8 +946,9 @@ async def _build_video_prompt(
             tag = tag_template.format(i=idx)
             ref_desc += f"- {tag} ({role_name}): {description}\n"
         ref_desc += f"\nIMAGE COMBINATION PLAN:\n{ref_combination_plan}\n"
-        ref_desc += f"\nWhen writing scene_prompt, explicitly reference available images using their tags ({tag_template.format(i=1)}, {tag_template.format(i=2)}, etc.) at moments where they should appear or be visible."
+        ref_desc += f"\nWhen writing scene_prompt for EACH shot, MUST explicitly reference at least one image tag ({tag_template.format(i=1)}, {tag_template.format(i=2)}, etc.) to show which reference image(s) should be visible in that shot."
         ref_images_context = ref_desc
+        scene_prompt_rule = "scene_prompt: MUST include image tag(s) showing which reference image(s) appear in this shot. Then describe subject action + setting + lighting (English ONLY, visuals ONLY). Max 55 words per shot"
     elif ref_descriptions:
         # Manual mode: user-provided descriptions
         from utils.presets import get_image_tag_template
@@ -952,8 +957,9 @@ async def _build_video_prompt(
         for i, desc in enumerate(ref_descriptions, 1):
             tag = tag_template.format(i=i)
             ref_desc += f"- {tag}: {desc}\n"
-        ref_desc += f"\nWhen writing scene_prompt, reference the images using their tags ({tag_template.format(i=1)}, {tag_template.format(i=2)}, etc.) where they should appear in the shots."
+        ref_desc += f"\nWhen writing scene_prompt for EACH shot, MUST explicitly reference at least one image tag ({tag_template.format(i=1)}, {tag_template.format(i=2)}, etc.) to show which reference image(s) should be visible in that shot."
         ref_images_context = ref_desc
+        scene_prompt_rule = "scene_prompt: MUST include image tag(s) showing which reference image(s) appear in this shot. Then describe subject action + setting + lighting (English ONLY, visuals ONLY). Max 55 words per shot"
 
     _JSON_SYS = (
         "Output ONLY valid JSON. No prose. No markdown fences. Schema:\n"
@@ -981,7 +987,8 @@ async def _build_video_prompt(
         "- caption: same language as spoken_text\n"
         f"- transition: {transition_rule}\n"
         "- scene_prompt must depict EXACTLY the topic from the input\n"
-        "- G-rated, child-safe content only\n"
+        + ("- WITH REFERENCE IMAGES: EVERY scene_prompt MUST start with image tag(s) (e.g. '@Image1', '<<<element_1>>>') showing which reference image(s) appear in that shot — do NOT omit these tags\n" if (ref_roles or ref_descriptions) else "")
+        + "- G-rated, child-safe content only\n"
         f"- Total: {n_clips} shot(s), EXACTLY {actual_duration}s\n"
     )
 

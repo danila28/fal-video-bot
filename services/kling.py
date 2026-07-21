@@ -203,6 +203,7 @@ class KlingService:
         scene_prompts: list[str],
         anchor_photo_urls: list[str],
         clip_duration: int | list[int] = 10,
+        aspect_ratio: str = "9:16",
         negative_prompt: str = "",
         model_id: str = _V3_PRO_I2V,
         all_reference_urls: list[str] | None = None,
@@ -216,6 +217,7 @@ class KlingService:
         reference images (consistency comes from them, so last-frame stitching
         is skipped).
         clip_duration: single value for every clip, or a per-clip list.
+        aspect_ratio: video format (default "9:16" for vertical).
         """
         is_reference = model_id in _REFERENCE_MODELS
         clips: list[str] = []
@@ -242,6 +244,7 @@ class KlingService:
                     prompt=effective_prompt,
                     image_urls=all_reference_urls,
                     duration=dur,
+                    aspect_ratio=aspect_ratio,
                     model_id=model_id,
                 )
             else:
@@ -249,6 +252,7 @@ class KlingService:
                     prompt=effective_prompt,
                     image_url=photo_url,
                     duration=dur,
+                    aspect_ratio=aspect_ratio,
                     negative_prompt=negative_prompt,
                     model_id=model_id,
                 )
