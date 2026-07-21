@@ -296,7 +296,22 @@ async def _generate_seedance(
     )
 
     # ── Reference-to-Video: all photos anchor every clip, no last-frame stitching ──
-    if is_ref and valid_paths:
+    if is_ref:
+        if not valid_paths:
+            logger.error(f"Reference model {model} selected but no valid images provided")
+            raise RuntimeError(
+                f"Reference model requires images. "
+                f"None of {len(image_paths or [])} image path(s) exist on disk."
+            )
+        # Validate that LLM used image tags in scene_prompts
+        tag_warnings = _validate_ref_images_in_shots(
+            [{"scene_prompt": s} for s in scenes], model, len(valid_paths)
+        )
+        if tag_warnings:
+            logger.warning(f"Reference model {model}: LLM may not have referenced images: {tag_warnings}")
+            for warning in tag_warnings:
+                await notify(f"⚠️ {warning}")
+
         uploaded_urls = list(await asyncio.gather(*[seedance.upload_photo(p) for p in valid_paths]))
         if len(scenes) > 1:
             durations = _add_crossfade_padding(durations, joints=len(scenes) - 1, max_dur=15)
@@ -542,7 +557,22 @@ async def _generate_kling(
         )
 
     # ── Reference-to-Video (O3 Pro Ref): all photos anchor every clip ────────
-    elif is_ref and valid_paths:
+    elif is_ref:
+        if not valid_paths:
+            logger.error(f"Reference model {model} selected but no valid images provided")
+            raise RuntimeError(
+                f"Reference model requires images. "
+                f"None of {len(image_paths or [])} image path(s) exist on disk."
+            )
+        # Validate that LLM used image tags in scene_prompts
+        tag_warnings = _validate_ref_images_in_shots(
+            [{"scene_prompt": s} for s in scenes], model, len(valid_paths)
+        )
+        if tag_warnings:
+            logger.warning(f"Reference model {model}: LLM may not have referenced images: {tag_warnings}")
+            for warning in tag_warnings:
+                await notify(f"⚠️ {warning}")
+
         uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
         if len(scenes) > 1:
             shot_durations_list = _add_crossfade_padding(
@@ -1156,6 +1186,38 @@ def _build_shot_prompt(shot: dict) -> str:
     scene = shot.get("scene_prompt", "")
     cam = shot.get("camera_motion", "")
     return f"{scene}. Camera: {cam}." if cam else scene
+
+
+def _validate_ref_images_in_shots(shots: list[dict], video_model: str, num_images: int) -> list[str]:
+    """Validate that LLM-generated scene_prompts reference the uploaded reference images.
+
+    Returns list of warning messages if tags are missing. Empty if all OK.
+    For reference models, scene_prompts SHOULD contain @ImageN or <<<element_N>>> tags.
+    """
+    from utils.presets import get_image_tag_template
+    tag_template = get_image_tag_template(video_model)
+    warnings = []
+
+    if not shots or num_images < 1:
+        return warnings
+
+    tag_examples = [tag_template.format(i=i+1) for i in range(num_images)]
+
+    for i, shot in enumerate(shots):
+        scene_prompt = shot.get("scene_prompt", "").strip()
+        if not scene_prompt:
+            warnings.append(f"Shot {i+1}: scene_prompt is empty")
+            continue
+
+        # Check if ANY tag is present
+        has_any_tag = any(tag in scene_prompt for tag in tag_examples)
+        if not has_any_tag:
+            warnings.append(
+                f"Shot {i+1}: no reference image tags found (expected {tag_examples[0]}, "
+                f"{tag_examples[1] if len(tag_examples) > 1 else '...'}, etc)"
+            )
+
+    return warnings
 
 
 def _split_video_prompt(video_prompt: str, gemini) -> tuple[str, str]:
