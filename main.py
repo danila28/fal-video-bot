@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import sys
 
 import asyncpg
 from bot.storage import PostgresStorage
@@ -24,6 +25,13 @@ from utils.migrations import run_migrations
 
 async def main():
     """Main function to start the bot."""
+
+    # Server locale may default stdout/stderr to ASCII, which crashes logging
+    # as soon as any log line contains non-ASCII text (Cyrillic error messages,
+    # emoji, or non-English content pulled from Gemini responses).
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
