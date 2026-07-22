@@ -837,85 +837,141 @@ class GeminiService:
 
     # ── Reference video analysis ───────────────────────────────────────────
 
+    # Gemini generateContent caps the whole request at ~20 MB; anything close
+    # to that must go through the Files API instead of inline bytes.
+    _INLINE_VIDEO_LIMIT = 15 * 1024 * 1024
+    _MAX_REFERENCE_DURATION = 300  # 5 min — longer refs are slow & expensive to analyze
+    _VOICEOVER_WORDS_PER_SECOND = 2.2
+
+    async def _upload_video_for_analysis(self, video_path: str):
+        """Upload a video via the Gemini Files API and wait until it's ACTIVE."""
+        uploaded = await asyncio.to_thread(self.client.files.upload, file=video_path)
+        # Video files are processed asynchronously; poll until ready.
+        waited = 0
+        while getattr(uploaded.state, "name", str(uploaded.state)) == "PROCESSING":
+            if waited >= 120:
+                raise Exception("Gemini Files API: video processing timeout (120s)")
+            await asyncio.sleep(3)
+            waited += 3
+            uploaded = await asyncio.to_thread(self.client.files.get, name=uploaded.name)
+        state = getattr(uploaded.state, "name", str(uploaded.state))
+        if state != "ACTIVE":
+            raise Exception(f"Gemini Files API: video upload failed (state={state})")
+        return uploaded
+
     @_retry_cheap
     async def analyze_reference_video(
-        self, video_path: str, target_duration: int = 30
+        self,
+        video_path: str,
+        target_duration: int = 30,
+        num_scenes: int = 0,
+        min_shot_seconds: int = 4,
+        max_shot_seconds: int = 15,
     ) -> dict:
         """Analyze a reference video and extract its structure as a script.
 
-        Returns a dict matching the shots format:
+        The reference and the output may have very different durations: the
+        prompt asks Gemini to preserve the *proportional* pacing (hook /
+        build-up / payoff) rather than absolute timestamps, and the voiceover
+        is rewritten to a word budget that fits `target_duration`. Final shot
+        durations are additionally renormalized in code by
+        `_normalize_shot_durations` before generation, so the output always
+        matches the target regardless of what the LLM returns.
+
+        Returns a dict in the same shots format `parse_script_json` validates:
         {
-            "title": "extracted title/hook",
-            "voiceover": "if found, the main narrative",
-            "shots": [
-                {"scene_prompt": "description", "duration_seconds": 5, "transition": "cut"},
-                ...
-            ],
-            "metadata": {
-                "detected_language": "en",
-                "detected_tone": "upbeat|serious|funny|educational",
-                "detected_tempo": "fast|medium|slow",
-            }
+            "title": ..., "voiceover": ...,
+            "metadata": {"detected_language", "detected_tone", "detected_tempo",
+                         "reference_duration_seconds"},
+            "shots": [{"scene_prompt", "duration_seconds", "transition"}, ...]
         }
         """
         try:
-            with open(video_path, "rb") as f:
-                video_bytes = f.read()
-
             duration_secs = await asyncio.to_thread(self._probe_duration, video_path)
+            if duration_secs > self._MAX_REFERENCE_DURATION:
+                raise Exception(
+                    f"Reference video is too long ({duration_secs:.0f}s). "
+                    f"Maximum is {self._MAX_REFERENCE_DURATION}s — send a shorter clip."
+                )
+
+            if num_scenes <= 0:
+                num_scenes = max(1, round(target_duration / 10))
+            vo_word_budget = int(target_duration * self._VOICEOVER_WORDS_PER_SECOND)
 
             system_prompt = (
-                "You are a video content analyzer. Analyze the provided video and extract its structure.\n"
+                "You are a video content analyzer for a vertical short-video (9:16) production pipeline.\n"
+                "Analyze the provided reference video and design a NEW video with the same vibe, "
+                "pacing and narrative formula — not a copy.\n"
                 "Return ONLY a valid JSON object with this exact structure:\n"
                 "{\n"
                 '  "title": "catchy hook or title",\n'
-                '  "voiceover": "main narrative/script if present, empty string otherwise",\n'
+                '  "voiceover": "rewritten narration that fits the target duration, empty string if the reference has no speech",\n'
                 '  "metadata": {\n'
                 '    "detected_language": "en",\n'
                 '    "detected_tone": "upbeat|serious|funny|educational|mixed",\n'
                 '    "detected_tempo": "fast|medium|slow"\n'
                 '  },\n'
                 '  "shots": [\n'
-                '    {"scene_prompt": "detailed visual description of what happens", '
+                '    {"scene_prompt": "detailed visual description", '
                 '"duration_seconds": 5, "transition": "cut|dissolve|fade"},\n'
                 '    ...\n'
                 '  ]\n'
                 "}\n\n"
-                f"Video duration: {duration_secs:.1f}s. Target output duration: {target_duration}s. "
-                f"Scale the shot count and durations accordingly.\n"
-                "Each shot should have detailed visual descriptions so an AI image generator can create similar scenes.\n"
-                "DO NOT include URLs, copyright notices, or watermarks in descriptions.\n"
-                "Focus on: camera angles, lighting, color palette, movement, objects, composition."
+                "TIMING RULES:\n"
+                f"- Reference duration: {duration_secs:.1f}s. Target output duration: {target_duration}s. "
+                "They may differ a lot — preserve the PROPORTIONAL pacing (how much of the total time the hook, "
+                "build-up and payoff take), never absolute timestamps.\n"
+                f"- Produce exactly {num_scenes} shots; each duration_seconds between "
+                f"{min_shot_seconds} and {max_shot_seconds}, summing to ≈{target_duration}s.\n"
+                "- If the reference cuts faster than the shot limits allow, merge several reference "
+                "moments into one shot description that carries the same energy.\n"
+                f"- The voiceover must fit the target duration when spoken: MAXIMUM {vo_word_budget} words. "
+                "Compress or rewrite the reference narration, keep its language and tone.\n\n"
+                "VISUAL RULES:\n"
+                "- Every scene_prompt must describe a VERTICAL 9:16 composition, even if the reference is horizontal.\n"
+                "- NEVER ask for on-screen text, captions or subtitles inside scene_prompt — AI generators "
+                "render text badly. Put textual content into the voiceover or title instead.\n"
+                "- Do NOT identify real people or brands: describe generic appearance "
+                "(e.g. 'a young woman with long dark hair'), never names or logos.\n"
+                "- No URLs, copyright notices or watermarks in descriptions.\n"
+                "- Focus on: camera angle & motion, lighting, color palette, subject action, composition.\n"
+                "- If one recurring character appears in several shots, describe them IDENTICALLY "
+                "in every shot where they appear (same wording), so generated scenes stay consistent."
             )
 
             user_prompt = (
-                f"Analyze this video ({duration_secs:.1f}s) and extract its visual structure and narrative. "
-                f"Create {max(1, target_duration // 5)} scenes for a {target_duration}s video with similar vibe and pacing."
+                f"Analyze this {duration_secs:.1f}s reference video and design a {target_duration}s "
+                f"video with the same formula: same hook style, same pacing feel, same emotional arc."
             )
 
+            # Small files go inline (SDK base64-encodes raw bytes itself);
+            # bigger ones must use the Files API to stay under the request cap.
+            file_size = os.path.getsize(video_path)
+            if file_size <= self._INLINE_VIDEO_LIMIT:
+                with open(video_path, "rb") as f:
+                    video_bytes = f.read()
+                video_part = types.Part(
+                    inline_data=types.Blob(mime_type="video/mp4", data=video_bytes)
+                )
+            else:
+                uploaded = await self._upload_video_for_analysis(video_path)
+                video_part = types.Part(
+                    file_data=types.FileData(
+                        file_uri=uploaded.uri,
+                        mime_type=uploaded.mime_type or "video/mp4",
+                    )
+                )
+
             contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(text=user_prompt),
-                        # SDK expects raw bytes and base64-encodes them itself;
-                        # passing a pre-encoded base64 string corrupts the payload.
-                        types.Part(
-                            inline_data=types.Blob(
-                                mime_type="video/mp4",
-                                data=video_bytes,
-                            )
-                        ),
-                    ],
-                ),
+                types.Content(role="user", parts=[types.Part(text=user_prompt), video_part]),
             ]
             config = types.GenerateContentConfig(system_instruction=system_prompt)
 
-            # Try newer models first, fallback to stable versions
-            models_to_try = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
+            # Same catalogue as get_text_models — flash first (cheap, fast),
+            # pro as fallback for tricky videos.
+            models_to_try = ["gemini-3.5-flash", "gemini-3.1-pro"]
             response = None
             last_error = None
-
             for model_name in models_to_try:
                 try:
                     response = await asyncio.to_thread(
@@ -942,9 +998,13 @@ class GeminiService:
             if result is None:
                 raise Exception(f"Failed to parse video analysis response: {text[:500]}")
 
+            result.setdefault("metadata", {})
+            if isinstance(result["metadata"], dict):
+                result["metadata"]["reference_duration_seconds"] = round(duration_secs, 1)
+
             logger.info(
                 f"Reference video analyzed: {len(result.get('shots', []))} shots, "
-                f"tone={result.get('metadata', {}).get('detected_tone')}"
+                f"ref={duration_secs:.1f}s → target={target_duration}s"
             )
             return result
 
