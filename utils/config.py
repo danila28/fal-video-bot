@@ -55,3 +55,27 @@ if _missing:
         f"Missing required environment variables: {', '.join(_missing)}\n"
         "Check your .env file."
     )
+
+# API keys and tokens travel through .env files edited by hand; a copy-paste
+# through a messenger or rich-text editor can silently replace Latin letters
+# with Unicode lookalikes. Such a key *looks* fine but crashes deep inside the
+# HTTP stack ("'ascii' codec can't encode…" — headers are ASCII-only), which
+# is nearly impossible to trace back to the .env. Fail fast with a clear
+# message instead.
+_ASCII_ONLY = [
+    "TELEGRAM_TOKEN",
+    "GEMINI_API_KEY",
+    "ATLAS_API_KEY",
+    "BLOTATO_API_KEY",
+    "ELEVENLABS_API_KEY",
+]
+
+for _key in _ASCII_ONLY:
+    _val = config.get(_key) or ""
+    if not _val.isascii():
+        _bad = sorted({c for c in _val if not c.isascii()})
+        raise RuntimeError(
+            f"{_key} contains non-ASCII characters {_bad} — the value was likely "
+            "corrupted by a copy-paste (Cyrillic lookalikes / smart quotes). "
+            "Re-paste it into .env directly from the provider's dashboard."
+        )
