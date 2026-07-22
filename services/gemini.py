@@ -967,9 +967,10 @@ class GeminiService:
             ]
             config = types.GenerateContentConfig(system_instruction=system_prompt)
 
-            # Same catalogue as get_text_models — flash first (cheap, fast),
-            # pro as fallback for tricky videos.
-            models_to_try = ["gemini-3.5-flash", "gemini-3.1-pro"]
+            # Verified against ListModels for this key: gemini-3.5-flash exists,
+            # "gemini-3.1-pro" does NOT (only -preview). 2.5 family kept as a
+            # proven multimodal fallback.
+            models_to_try = ["gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash"]
             response = None
             last_error = None
             for model_name in models_to_try:
