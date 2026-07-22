@@ -897,6 +897,7 @@ class GeminiService:
             if num_scenes <= 0:
                 num_scenes = max(1, round(target_duration / 10))
             vo_word_budget = int(target_duration * self._VOICEOVER_WORDS_PER_SECOND)
+            vo_word_min = max(4, int(vo_word_budget * 0.6))
 
             system_prompt = (
                 "You are a video content analyzer for a vertical short-video (9:16) production pipeline.\n"
@@ -929,8 +930,11 @@ class GeminiService:
                 f"{min_shot_seconds} and {max_shot_seconds}, summing to ~{target_duration}s.\n"
                 "- If the reference cuts faster than the shot limits allow, merge several reference "
                 "moments into one shot description that carries the same energy.\n"
-                f"- The voiceover must fit the target duration when spoken: MAXIMUM {vo_word_budget} words. "
-                "Compress or rewrite the reference narration, keep its language and tone.\n\n"
+                f"- The voiceover must SPAN the target duration when spoken: {vo_word_min}-{vo_word_budget} words. "
+                "If the reference narration is shorter, EXPAND it in the same voice, language and style "
+                "so narration (and karaoke subtitles) cover most of the video instead of ending after "
+                "a few seconds. If it is longer, compress it. Keep its language and tone. "
+                "Only return an empty voiceover when the reference has NO speech at all.\n\n"
                 "VISUAL RULES:\n"
                 "- Every scene_prompt must describe a VERTICAL 9:16 composition, even if the reference is horizontal.\n"
                 "- NEVER ask for on-screen text, captions or subtitles inside scene_prompt — AI generators "
@@ -1045,6 +1049,7 @@ class GeminiService:
         if num_scenes <= 0:
             num_scenes = max(1, round(target_duration / 10))
         vo_word_budget = int(target_duration * self._VOICEOVER_WORDS_PER_SECOND)
+        vo_word_min = max(4, int(vo_word_budget * 0.6))
 
         system_prompt = (
             "You are editing a video formula (a JSON script for a vertical 9:16 AI-generated video).\n"
@@ -1054,8 +1059,8 @@ class GeminiService:
             "HARD RULES (always enforce, even after edits):\n"
             f"- Exactly {num_scenes} shots; each duration_seconds between {min_shot_seconds} and "
             f"{max_shot_seconds}, summing to ~{target_duration}s.\n"
-            f"- voiceover fits the duration when spoken: MAXIMUM {vo_word_budget} words, keep its language "
-            "unless the instruction says otherwise.\n"
+            f"- voiceover SPANS the duration when spoken: {vo_word_min}-{vo_word_budget} words (expand in the "
+            "same style if shorter, compress if longer), keep its language unless the instruction says otherwise.\n"
             "- title in the same language as the voiceover; image_prompt and sfx_description in English.\n"
             "- scene_prompt: rich 40-80 word visual descriptions, vertical 9:16 composition, no on-screen "
             "text, no real people's names or brand logos.\n"

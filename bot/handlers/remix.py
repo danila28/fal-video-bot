@@ -511,10 +511,22 @@ async def handle_library_delete(query: CallbackQuery, state: FSMContext):
 # CONFIRM: photos preview → video prompt
 # ─────────────────────────────────────────────
 
+# Complementary roles so multi-photo references show DIFFERENT views of the
+# same character instead of near-duplicates of one prompt.
+_REF_PHOTO_ROLES = [
+    "full-body shot: the character standing, entire outfit visible head to toe",
+    "close-up portrait: face and shoulders, facial details clearly visible",
+    "three-quarter view in a dynamic pose, showing the character from a different angle",
+    "the character in the story's environment, medium shot with background context",
+]
+
+
 async def _generate_reference_images(
     message: Message, state: FSMContext, settings: dict, analysis: dict
 ) -> list[str]:
     """Generate reference photos from the formula's image_prompt. Raises on failure."""
+    import asyncio
+
     gemini = container.inject(GeminiService)
     imagegen = container.inject(ImageGenService)
     video_model = (settings.get("video_model") or "seedance").lower()
@@ -535,13 +547,29 @@ async def _generate_reference_images(
         image_prompt = await _build_image_prompt(image_source, settings, gemini, strict_script=True)
         await state.update_data(remix_image_prompt=image_prompt)
 
-    return await imagegen.generate_many(
-        prompt=image_prompt,
-        model=settings.get("image_model") or "",
-        video_model=video_model,
-        count=image_count,
-        notify=message.answer,
-    )
+    if image_count <= 1:
+        return await imagegen.generate_many(
+            prompt=image_prompt,
+            model=settings.get("image_model") or "",
+            video_model=video_model,
+            count=1,
+            notify=message.answer,
+        )
+
+    # One prompt × N runs yields near-duplicates — give every photo its own
+    # complementary role while pinning character and style.
+    prompts = [
+        (
+            f"{image_prompt}\n\n"
+            f"This photo specifically: {_REF_PHOTO_ROLES[i % len(_REF_PHOTO_ROLES)]}. "
+            "Exactly the same character, outfit, colors and art style as the other photos in this set."
+        )
+        for i in range(image_count)
+    ]
+    model = settings.get("image_model") or ""
+    return list(await asyncio.gather(*[
+        imagegen.generate(p, model, video_model, message.answer) for p in prompts
+    ]))
 
 
 @router.callback_query(F.data == "remix:confirm_formula", IsAllowed(allowed_users))
