@@ -112,10 +112,22 @@ async def handle_remix_link(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Remix analysis failed for {url}: {e}")
         error_msg = str(e)
+
+        # Обработка специфичных ошибок
         if "402" in error_msg or "payment" in error_msg.lower():
             error_display = "❌ Payment required for ElevenLabs voice. Check ⚙️ Settings → 🎙 Voice"
+        elif "sign in" in error_msg.lower() or "bot" in error_msg.lower() or "youtube" in error_msg.lower():
+            error_display = (
+                "❌ YouTube требует аутентификацию для этого видео.\n\n"
+                "Попробуй:\n"
+                "• Другую ссылку на YouTube\n"
+                "• TikTok, Instagram Reels или другую платформу\n"
+                "• Публичное видео вместо приватного"
+            )
         elif "yt-dlp" in error_msg.lower() or "download" in error_msg.lower():
-            error_display = f"❌ Failed to download video: {error_msg}\n\nTry a different link or platform"
+            error_display = f"❌ Failed to download video\n\nTry a different link or platform"
+        elif "timeout" in error_msg.lower() or "connection" in error_msg.lower():
+            error_display = "❌ Network timeout. Check your connection or try again in a moment"
         else:
             error_display = f"❌ Failed to analyze video: {error_msg}"
 

@@ -910,12 +910,29 @@ class GeminiService:
                 ),
             ]
             config = types.GenerateContentConfig(system_instruction=system_prompt)
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model="gemini-2.0-flash",
-                contents=contents,
-                config=config,
-            )
+
+            # Try newer models first, fallback to stable versions
+            models_to_try = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
+            response = None
+            last_error = None
+
+            for model_name in models_to_try:
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=model_name,
+                        contents=contents,
+                        config=config,
+                    )
+                    logger.info(f"Video analysis successful with model {model_name}")
+                    break
+                except Exception as model_error:
+                    last_error = model_error
+                    logger.warning(f"Model {model_name} failed, trying next: {model_error}")
+                    continue
+
+            if response is None:
+                raise last_error or Exception("All Gemini models failed for video analysis")
 
             text = getattr(response, "text", None)
             if not text or not text.strip():
