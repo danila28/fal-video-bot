@@ -859,10 +859,8 @@ class GeminiService:
         }
         """
         try:
-            import base64
             with open(video_path, "rb") as f:
                 video_bytes = f.read()
-            video_b64 = base64.standard_b64encode(video_bytes).decode("utf-8")
 
             duration_secs = await asyncio.to_thread(self._probe_duration, video_path)
 
@@ -900,10 +898,12 @@ class GeminiService:
                     role="user",
                     parts=[
                         types.Part(text=user_prompt),
+                        # SDK expects raw bytes and base64-encodes them itself;
+                        # passing a pre-encoded base64 string corrupts the payload.
                         types.Part(
                             inline_data=types.Blob(
                                 mime_type="video/mp4",
-                                data=video_b64,
+                                data=video_bytes,
                             )
                         ),
                     ],
