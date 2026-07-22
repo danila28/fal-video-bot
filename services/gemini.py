@@ -908,6 +908,8 @@ class GeminiService:
                 '  "voiceover": "rewritten narration that fits the target duration, empty string if the reference has no speech",\n'
                 '  "image_prompt": "one rich ENGLISH description (60-100 words) of the main character AND the visual style '
                 '(art style, palette, lighting, mood) — used to generate reference photos that anchor every scene",\n'
+                '  "sfx_description": "short ENGLISH description (10-25 words) of the ambient sound design / atmosphere '
+                'of the reference (e.g. rain, crowd murmur, tense drone) — NEVER name specific songs or artists",\n'
                 '  "metadata": {\n'
                 '    "detected_language": "en",\n'
                 '    "detected_tone": "upbeat|serious|funny|educational|mixed",\n'
@@ -1019,3 +1021,67 @@ class GeminiService:
             # to localize from the one-line message alone.
             logger.exception("Error analyzing reference video")
             raise Exception(f"Failed to analyze video [{type(e).__name__}]: {str(e)}")
+
+    @_retry_cheap
+    async def refine_reference_formula(
+        self,
+        analysis: dict,
+        instruction: str,
+        target_duration: int = 30,
+        num_scenes: int = 0,
+        min_shot_seconds: int = 4,
+        max_shot_seconds: int = 15,
+        model: str = "",
+    ) -> dict:
+        """Rework an existing formula with a text instruction — no video needed.
+
+        Used for: user edits ("make the hero a woman, more serious tone"),
+        re-timing to a new target duration, and adapting a saved library
+        formula to a new topic. Returns the same JSON structure as
+        `analyze_reference_video`; raises if the model returns invalid JSON.
+        """
+        import json as _json
+
+        if num_scenes <= 0:
+            num_scenes = max(1, round(target_duration / 10))
+        vo_word_budget = int(target_duration * self._VOICEOVER_WORDS_PER_SECOND)
+
+        system_prompt = (
+            "You are editing a video formula (a JSON script for a vertical 9:16 AI-generated video).\n"
+            "Apply the user's instruction to the given formula and return ONLY the updated JSON with the "
+            "SAME structure and ALL the same keys (title, voiceover, image_prompt, sfx_description, "
+            "metadata, shots[]). Keep everything the instruction doesn't touch.\n\n"
+            "HARD RULES (always enforce, even after edits):\n"
+            f"- Exactly {num_scenes} shots; each duration_seconds between {min_shot_seconds} and "
+            f"{max_shot_seconds}, summing to ~{target_duration}s.\n"
+            f"- voiceover fits the duration when spoken: MAXIMUM {vo_word_budget} words, keep its language "
+            "unless the instruction says otherwise.\n"
+            "- title in the same language as the voiceover; image_prompt and sfx_description in English.\n"
+            "- scene_prompt: rich 40-80 word visual descriptions, vertical 9:16 composition, no on-screen "
+            "text, no real people's names or brand logos.\n"
+            "- If a recurring character appears in several shots, describe them identically in each."
+        )
+        user_prompt = (
+            "Current formula:\n```json\n"
+            + _json.dumps(analysis, ensure_ascii=False, indent=2)
+            + "\n```\n\nInstruction: "
+            + instruction.strip()
+        )
+
+        text = await self.generate_text(user_prompt, system_prompt, model)
+        result = self.parse_script_json(text)
+        if result is None:
+            raise Exception(f"Formula refine returned invalid JSON: {text[:300]}")
+
+        # Preserve fields the model may have dropped.
+        for key in ("image_prompt", "sfx_description"):
+            result.setdefault(key, analysis.get(key, ""))
+        result.setdefault("metadata", {})
+        if isinstance(result["metadata"], dict) and isinstance(analysis.get("metadata"), dict):
+            for mk, mv in analysis["metadata"].items():
+                result["metadata"].setdefault(mk, mv)
+
+        logger.info(
+            f"Formula refined: {len(result.get('shots', []))} shots, instruction={instruction[:80]!r}"
+        )
+        return result

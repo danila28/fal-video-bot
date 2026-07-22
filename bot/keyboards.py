@@ -28,6 +28,7 @@ def get_idea_entry_keyboard():
         inline_keyboard=[
             [InlineKeyboardButton(text="📝 Use my own script", callback_data="own_script:start")],
             [InlineKeyboardButton(text="🔁 Remix from link", callback_data="remix:start")],
+            [InlineKeyboardButton(text="📚 My formulas", callback_data="remix:lib")],
         ]
     )
 
@@ -285,12 +286,58 @@ def get_ref_image_mode_keyboard():
     )
 
 
-def get_remix_formula_keyboard():
-    """Confirm extracted reference formula before generation."""
+def get_remix_formula_keyboard(match_secs: int = 0, saved: bool = False):
+    """Confirm extracted reference formula before generation.
+
+    match_secs > 0 adds a one-tap "re-time to reference duration" button.
+    saved=True replaces the save button with an inert confirmation label.
+    """
+    rows = [[InlineKeyboardButton(text="✅ Generate", callback_data="remix:confirm_formula")]]
+    if match_secs > 0:
+        rows.append([InlineKeyboardButton(
+            text=f"⏱ Make it {match_secs}s (like reference)",
+            callback_data="remix:match_duration",
+        )])
+    rows.append([
+        InlineKeyboardButton(text="✏️ Edit formula", callback_data="remix:edit_formula"),
+        InlineKeyboardButton(
+            text="✔️ Saved" if saved else "💾 Save formula",
+            callback_data="remix:noop" if saved else "remix:save_formula",
+        ),
+    ])
+    rows.append([InlineKeyboardButton(text="❌ Cancel", callback_data="remix:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_remix_images_keyboard():
+    """Review generated reference photos before spending money on video."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Generate", callback_data="remix:confirm_formula")],
-            [InlineKeyboardButton(text="✏️ Edit formula", callback_data="remix:edit_formula")],
+            [InlineKeyboardButton(text="✅ Continue to video", callback_data="remix:images_ok")],
+            [InlineKeyboardButton(text="🔄 Regenerate photos", callback_data="remix:images_regen")],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="remix:cancel")],
+        ]
+    )
+
+
+def get_formula_library_keyboard(formulas: list[dict]):
+    """Saved formulas list: tap to use, trash to delete."""
+    rows = []
+    for f in formulas:
+        title = (f.get("title") or f"Formula #{f['id']}")[:30]
+        rows.append([
+            InlineKeyboardButton(text=f"📄 {title}", callback_data=f"remix:lib_use:{f['id']}"),
+            InlineKeyboardButton(text="🗑", callback_data=f"remix:lib_del:{f['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="❌ Close", callback_data="remix:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_formula_topic_keyboard():
+    """Asked after picking a library formula: new topic or use as-is."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="▶️ Use as-is", callback_data="remix:lib_asis")],
             [InlineKeyboardButton(text="❌ Cancel", callback_data="remix:cancel")],
         ]
     )

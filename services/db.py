@@ -180,3 +180,63 @@ class DBService:
                 limit,
             )
             return [dict(r) for r in rows]
+
+    # ─────────────────────────────────────────────
+    # REMIX FORMULA LIBRARY
+    # ─────────────────────────────────────────────
+
+    async def save_formula(
+        self, chat_id: int, user_id: int, title: str, formula: dict
+    ) -> int:
+        """Save a remix formula. Returns the new row id."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO remix_formulas (chat_id, user_id, title, formula)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+                """,
+                chat_id,
+                user_id,
+                (title or "")[:120],
+                json.dumps(formula, ensure_ascii=False),
+            )
+            return row["id"]
+
+    async def list_formulas(self, chat_id: int, limit: int = 10) -> list[dict]:
+        """Last `limit` saved formulas for this chat, newest first (id + title)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, title, created_at
+                FROM remix_formulas
+                WHERE chat_id=$1
+                ORDER BY id DESC
+                LIMIT $2
+                """,
+                chat_id,
+                limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_formula(self, formula_id: int, chat_id: int) -> dict | None:
+        """Fetch one formula (chat_id checked for safety). Returns parsed dict."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT formula FROM remix_formulas WHERE id=$1 AND chat_id=$2",
+                formula_id,
+                chat_id,
+            )
+            if not row:
+                return None
+            raw = row["formula"]
+            return raw if isinstance(raw, dict) else json.loads(raw)
+
+    async def delete_formula(self, formula_id: int, chat_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM remix_formulas WHERE id=$1 AND chat_id=$2",
+                formula_id,
+                chat_id,
+            )
+            return result == "DELETE 1"

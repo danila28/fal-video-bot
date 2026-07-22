@@ -96,6 +96,7 @@ async def _post_process_video(
     video_speed: float = 1.0,
     music_path: str = "",
     music_volume: float = 0.18,
+    sfx_description: str = "",
 ):
     """Pipeline: raw → grade → SFX → audio mux → karaoke subs → speed.
 
@@ -118,7 +119,9 @@ async def _post_process_video(
             eleven = container.inject(ElevenLabsService)
             if eleven.is_configured:
                 video_dur = await asyncio.to_thread(GeminiService._probe_duration, base_silent)
-                sfx_desc = _sfx_description_from_scene(video_prompt)
+                # Remix flow supplies a dedicated sound-design description from
+                # the reference analysis — far better than a scene-text snippet.
+                sfx_desc = sfx_description or _sfx_description_from_scene(video_prompt)
                 sfx_path = await eleven.synthesize_sfx(
                     sfx_desc, duration_seconds=min(video_dur, 22.0)
                 )

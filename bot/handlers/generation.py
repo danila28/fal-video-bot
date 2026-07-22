@@ -963,6 +963,7 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             video_speed=float(settings.get("video_speed", 1.0)),
             music_path=settings.get("background_music_path") or "",
             music_volume=float(settings.get("background_music_volume", 0.18)),
+            sfx_description=data.get("remix_sfx_description") or "",
         )
 
         video_file = result["video_path"]
