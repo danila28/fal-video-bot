@@ -285,6 +285,19 @@ class SeedanceService:
                 )
             clips.append(clip_path)
 
+            # Verify Atlas actually honored the requested duration — if it
+            # silently rounds/clamps, the final video would run longer/shorter
+            # than the user's target_duration setting.
+            try:
+                actual_dur = await asyncio.to_thread(self._probe_duration, clip_path)
+                if actual_dur > 0 and abs(actual_dur - dur) > 1.0:
+                    logger.warning(
+                        f"Seedance clip {i + 1}/{len(scene_prompts)} duration mismatch: "
+                        f"requested {dur}s, Atlas returned {actual_dur:.1f}s (model={model_id})"
+                    )
+            except Exception as e:
+                logger.debug(f"Duration probe failed (non-fatal): {e}")
+
             # Last-frame continuity (I2V only — references anchor identity instead)
             if not is_reference and i < len(scene_prompts) - 1:
                 frame_path = await self._extract_last_frame(clip_path)

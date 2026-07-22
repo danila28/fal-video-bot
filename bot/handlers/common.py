@@ -227,7 +227,7 @@ async def generate_video_for_model(
     # target — renormalize in code so the video length matches the setting.
     if shots:
         if model.startswith("kling"):
-            min_dur, max_dur = 3, 10
+            min_dur, max_dur = 3, _kling_max_clip_duration(model)
         else:
             min_dur, max_dur = 4, 15
         target = settings.get("target_duration", DEFAULT_TARGET_DURATION)
@@ -459,13 +459,14 @@ async def _generate_kling(
     target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
     clip_dur = _clip_duration_for_model(model)
     negative_prompt = settings.get("negative_prompt") or ""
+    kling_max_dur = _kling_max_clip_duration(model)
 
     if shots:
         scenes = [_build_shot_prompt(s) for s in shots]
-        shot_durations_list = [int(max(3, min(10, s.get("duration_seconds", clip_dur)))) for s in shots]
+        shot_durations_list = [int(max(3, min(kling_max_dur, s.get("duration_seconds", clip_dur)))) for s in shots]
         shot_transitions = [s.get("transition", "cut") for s in shots]
     else:
-        shot_durations_list = _plan_clip_durations(target_duration, min_dur=3, max_dur=10)
+        shot_durations_list = _plan_clip_durations(target_duration, min_dur=3, max_dur=kling_max_dur)
         scenes = _split_scene_into_shots(video_prompt, len(shot_durations_list))
         shot_transitions = None
 
@@ -576,7 +577,7 @@ async def _generate_kling(
         uploaded_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
         if len(scenes) > 1:
             shot_durations_list = _add_crossfade_padding(
-                shot_durations_list, joints=len(scenes) - 1, max_dur=10
+                shot_durations_list, joints=len(scenes) - 1, max_dur=kling_max_dur
             )
         await notify(
             f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
@@ -804,6 +805,21 @@ def _clip_duration_for_model(video_model: str) -> int:
     return 15      # Default for all other models
 
 
+def _kling_max_clip_duration(video_model: str) -> int:
+    """Per-shot duration cap for Kling clip-by-clip generation calls.
+
+    kling_o3_pro_ref supports 3-15s per Atlas call (confirmed) — using the
+    full range lets a 15s (or shorter) target render as ONE clip instead of
+    being force-split into multiple independent Atlas calls, which avoids
+    character/identity drift between clips (each call is a fresh, unrelated
+    generation even with the same reference photos).
+    Other Kling tiers keep the conservative 10s cap (unconfirmed for >10s).
+    """
+    if video_model == "kling_o3_pro_ref":
+        return 15
+    return 10
+
+
 def _plan_clip_durations(target_duration: int, min_dur: int, max_dur: int) -> list[int]:
     """Split target_duration into the fewest clips of length min_dur..max_dur
     that sum to target_duration exactly, instead of always rounding up to a
@@ -944,7 +960,7 @@ async def _build_video_prompt(
     if video_model.startswith("seedance"):
         min_dur, max_dur = 4, 15
     elif "kling" in video_model:
-        min_dur, max_dur = 3, 10
+        min_dur, max_dur = 3, _kling_max_clip_duration(video_model)
     else:
         min_dur, max_dur = 4, clip_duration
 
@@ -1051,7 +1067,7 @@ async def _build_video_prompt_text(
     if video_model.startswith("seedance"):
         min_dur, max_dur = 4, 15
     elif "kling" in video_model:
-        min_dur, max_dur = 3, 10
+        min_dur, max_dur = 3, _kling_max_clip_duration(video_model)
     else:
         min_dur, max_dur = 4, clip_duration
 
