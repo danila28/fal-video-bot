@@ -132,7 +132,7 @@ async def handle_remix_upload(message: Message, state: FSMContext):
         await state.set_state(RemixState.CONFIRM_FORMULA)
 
     except Exception as e:
-        logger.error(f"Remix analysis failed: {e}")
+        logger.exception("Remix analysis failed")
         await status_msg.edit_text(
             f"❌ Failed to analyze video: {e}\n\nSend another video or tap 🎬 Generate video."
         )

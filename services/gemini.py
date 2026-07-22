@@ -922,7 +922,7 @@ class GeminiService:
                 "They may differ a lot — preserve the PROPORTIONAL pacing (how much of the total time the hook, "
                 "build-up and payoff take), never absolute timestamps.\n"
                 f"- Produce exactly {num_scenes} shots; each duration_seconds between "
-                f"{min_shot_seconds} and {max_shot_seconds}, summing to ≈{target_duration}s.\n"
+                f"{min_shot_seconds} and {max_shot_seconds}, summing to ~{target_duration}s.\n"
                 "- If the reference cuts faster than the shot limits allow, merge several reference "
                 "moments into one shot description that carries the same energy.\n"
                 f"- The voiceover must fit the target duration when spoken: MAXIMUM {vo_word_budget} words. "
@@ -1009,5 +1009,7 @@ class GeminiService:
             return result
 
         except Exception as e:
-            logger.error(f"Error analyzing reference video: {e}")
-            raise Exception(f"Failed to analyze video: {str(e)}")
+            # Full traceback into the log — encoding/SDK errors are impossible
+            # to localize from the one-line message alone.
+            logger.exception("Error analyzing reference video")
+            raise Exception(f"Failed to analyze video [{type(e).__name__}]: {str(e)}")
