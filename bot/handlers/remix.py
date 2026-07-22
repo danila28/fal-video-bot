@@ -307,9 +307,9 @@ async def handle_edit_formula(query: CallbackQuery, state: FSMContext):
     await query.answer()
     await query.message.answer(
         "✏️ Send your edit as plain text, e.g.:\n"
-        "• «сделай героя девушкой, тон серьёзнее»\n"
-        "• «убери вторую сцену, добавь крупный план в конце»\n"
-        "• «change setting to a cyberpunk city at night»"
+        "• \"make the main character a woman, more serious tone\"\n"
+        "• \"remove the second scene, add a close-up at the end\"\n"
+        "• \"change setting to a cyberpunk city at night\""
     )
     await state.set_state(RemixState.EDIT_FORMULA)
 
@@ -428,7 +428,7 @@ async def handle_library_use(query: CallbackQuery, state: FSMContext):
     await state.update_data(remix_analysis=analysis, remix_saved=True)
     await query.message.answer(
         f"📄 Formula #{formula_id} loaded.\n\n"
-        "Send a NEW TOPIC as text (e.g. «про кофе», «about morning workouts») — "
+        "Send a NEW TOPIC as text (e.g. \"about coffee\", \"about morning workouts\") — "
         "I'll adapt the formula to it.\n\nOr use it exactly as saved:",
         reply_markup=get_formula_topic_keyboard(),
     )

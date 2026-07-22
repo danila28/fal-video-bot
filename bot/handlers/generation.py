@@ -993,8 +993,8 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
         err = str(e)
         if "insufficient balance" in err.lower() or '"code":402' in err:
             err = (
-                "💳 На Atlas Cloud закончился баланс — пополните его на atlascloud.ai "
-                "и нажмите Regenerate."
+                "💳 Atlas Cloud balance is empty — top it up at atlascloud.ai "
+                "and tap Regenerate."
             )
         await callback.message.answer(f"Error: {err}\nTry again", reply_markup=get_video_keyboard())
     await state.set_state(GenerationState.CONFIRM_VIDEO)
