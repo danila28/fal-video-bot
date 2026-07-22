@@ -40,3 +40,4 @@ typing_extensions==4.15.0
 urllib3==2.6.3
 websockets==16.0
 yarl==1.23.0
+yt-dlp==2025.1.23

@@ -805,17 +805,20 @@ def _clip_duration_for_model(video_model: str) -> int:
     return 15      # Default for all other models
 
 
+_KLING_15S_REF_MODELS = {"kling_o3_pro_ref", "kling_o3_std_ref"}
+
+
 def _kling_max_clip_duration(video_model: str) -> int:
     """Per-shot duration cap for Kling clip-by-clip generation calls.
 
-    kling_o3_pro_ref supports 3-15s per Atlas call (confirmed) — using the
-    full range lets a 15s (or shorter) target render as ONE clip instead of
-    being force-split into multiple independent Atlas calls, which avoids
-    character/identity drift between clips (each call is a fresh, unrelated
-    generation even with the same reference photos).
+    kling_o3_pro_ref and kling_o3_std_ref support 3-15s per Atlas call
+    (confirmed) — using the full range lets a 15s (or shorter) target render
+    as ONE clip instead of being force-split into multiple independent Atlas
+    calls, which avoids character/identity drift between clips (each call is
+    a fresh, unrelated generation even with the same reference photos).
     Other Kling tiers keep the conservative 10s cap (unconfirmed for >10s).
     """
-    if video_model == "kling_o3_pro_ref":
+    if video_model in _KLING_15S_REF_MODELS:
         return 15
     return 10
 
@@ -1240,7 +1243,7 @@ def _split_video_prompt(video_prompt: str, gemini) -> tuple[str, str]:
     # JSON format from Gemini structured output
     parsed = GeminiService.parse_script_json(video_prompt)
     if parsed is not None:
-        voiceover = parsed.get("spoken_text", "")
+        voiceover = parsed.get("spoken_text", "") or parsed.get("voiceover", "")
         shots = parsed.get("shots", [])
         if shots:
             parts = []

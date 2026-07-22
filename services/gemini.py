@@ -86,6 +86,7 @@ class GeminiService:
             {"name": "kling_t2v",          "price": "📝 Kling v3 Pro T2V · $0.10/s"},
             {"name": "kling_turbo_t2v",    "price": "📝⚡ Kling v3 Turbo T2V · $0.05/s"},
             {"name": "kling_o3_pro_ref",   "price": "🎭 Kling O3 Pro Ref · $0.14/s"},
+            {"name": "kling_o3_std_ref",   "price": "🎭 Kling O3 Std Ref · $0.10/s"},
         ]
 
     # ── Text generation ────────────────────────────────────────────────────
@@ -833,3 +834,103 @@ class GeminiService:
         except Exception as e:
             logger.error(f"Error applying speed: {e}")
             return video_path
+
+    # ── Reference video analysis ───────────────────────────────────────────
+
+    @_retry_cheap
+    async def analyze_reference_video(
+        self, video_path: str, target_duration: int = 30
+    ) -> dict:
+        """Analyze a reference video and extract its structure as a script.
+
+        Returns a dict matching the shots format:
+        {
+            "title": "extracted title/hook",
+            "voiceover": "if found, the main narrative",
+            "shots": [
+                {"scene_prompt": "description", "duration_seconds": 5, "transition": "cut"},
+                ...
+            ],
+            "metadata": {
+                "detected_language": "en",
+                "detected_tone": "upbeat|serious|funny|educational",
+                "detected_tempo": "fast|medium|slow",
+            }
+        }
+        """
+        try:
+            import base64
+            with open(video_path, "rb") as f:
+                video_bytes = f.read()
+            video_b64 = base64.standard_b64encode(video_bytes).decode("utf-8")
+
+            duration_secs = await asyncio.to_thread(self._probe_duration, video_path)
+
+            system_prompt = (
+                "You are a video content analyzer. Analyze the provided video and extract its structure.\n"
+                "Return ONLY a valid JSON object with this exact structure:\n"
+                "{\n"
+                '  "title": "catchy hook or title",\n'
+                '  "voiceover": "main narrative/script if present, empty string otherwise",\n'
+                '  "metadata": {\n'
+                '    "detected_language": "en",\n'
+                '    "detected_tone": "upbeat|serious|funny|educational|mixed",\n'
+                '    "detected_tempo": "fast|medium|slow"\n'
+                '  },\n'
+                '  "shots": [\n'
+                '    {"scene_prompt": "detailed visual description of what happens", '
+                '"duration_seconds": 5, "transition": "cut|dissolve|fade"},\n'
+                '    ...\n'
+                '  ]\n'
+                "}\n\n"
+                f"Video duration: {duration_secs:.1f}s. Target output duration: {target_duration}s. "
+                f"Scale the shot count and durations accordingly.\n"
+                "Each shot should have detailed visual descriptions so an AI image generator can create similar scenes.\n"
+                "DO NOT include URLs, copyright notices, or watermarks in descriptions.\n"
+                "Focus on: camera angles, lighting, color palette, movement, objects, composition."
+            )
+
+            user_prompt = (
+                f"Analyze this video ({duration_secs:.1f}s) and extract its visual structure and narrative. "
+                f"Create {max(1, target_duration // 5)} scenes for a {target_duration}s video with similar vibe and pacing."
+            )
+
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(text=user_prompt),
+                        types.Part(
+                            inline_data=types.Blob(
+                                mime_type="video/mp4",
+                                data=video_b64,
+                            )
+                        ),
+                    ],
+                ),
+            ]
+            config = types.GenerateContentConfig(system_instruction=system_prompt)
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model="gemini-2.0-flash",
+                contents=contents,
+                config=config,
+            )
+
+            text = getattr(response, "text", None)
+            if not text or not text.strip():
+                raise Exception("Empty response from video analysis")
+
+            result = self.parse_script_json(text)
+            if result is None:
+                raise Exception(f"Failed to parse video analysis response: {text[:500]}")
+
+            logger.info(
+                f"Reference video analyzed: {len(result.get('shots', []))} shots, "
+                f"tone={result.get('metadata', {}).get('detected_tone')}"
+            )
+            return result
+
+        except Exception as e:
+            logger.error(f"Error analyzing reference video: {e}")
+            raise Exception(f"Failed to analyze video: {str(e)}")

@@ -8,6 +8,7 @@ import asyncpg
 from bot.storage import PostgresStorage
 from services.blotato import BlotatoService
 from services.db import DBService
+from services.downloader import DownloaderService
 from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
@@ -45,6 +46,8 @@ async def main():
     container.instance(DBService(pool=pool, bot_id="fvb"))
 
     container.instance(GeminiService(api_key=config["GEMINI_API_KEY"]))
+
+    container.instance(DownloaderService())
 
     container.instance(
         ImageGenService(

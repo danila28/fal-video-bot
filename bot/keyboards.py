@@ -23,10 +23,11 @@ def get_persistent_keyboard():
 
 
 def get_idea_entry_keyboard():
-    """Shown with the 'Send your idea' message — offers the own-script bypass."""
+    """Shown with the 'Send your idea' message — offers the own-script bypass and remix."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📝 Use my own script", callback_data="own_script:start")],
+            [InlineKeyboardButton(text="🔁 Remix from link", callback_data="remix:start")],
         ]
     )
 
@@ -280,5 +281,16 @@ def get_ref_image_mode_keyboard():
         inline_keyboard=[
             [InlineKeyboardButton(text="✍️ Own descriptions", callback_data="ref_mode:manual")],
             [InlineKeyboardButton(text="🤖 Bot decides", callback_data="ref_mode:auto")],
+        ]
+    )
+
+
+def get_remix_formula_keyboard():
+    """Confirm extracted reference formula before generation."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Generate", callback_data="remix:confirm_formula")],
+            [InlineKeyboardButton(text="✏️ Edit formula", callback_data="remix:edit_formula")],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="remix:cancel")],
         ]
     )

@@ -8,7 +8,8 @@ Supported models (set via settings video_model):
   kling_turbo_t2v   → Kling v3.0 Turbo  Text-to-Video
   kling_o3_pro      → Kling O3 Pro      Image-to-Video
   kling_o3_std      → Kling O3 Std      Image-to-Video
-  kling_o3_pro_ref  → Kling O3 Pro      Reference-to-Video (images array, ≤7 photos)
+  kling_o3_pro_ref  → Kling O3 Pro      Reference-to-Video (images array, ≤7 photos, 3-15s/clip)
+  kling_o3_std_ref  → Kling O3 Std      Reference-to-Video (images array, ≤7 photos, 3-15s/clip)
 
 Reference-to-Video passes ALL reference images to every clip (character
 consistency comes from the references, so last-frame stitching is skipped)
@@ -34,6 +35,7 @@ _V3_TURBO_T2V  = "kwaivgi/kling-v3.0-turbo/text-to-video"
 _O3_PRO_I2V    = "kwaivgi/kling-video-o3-pro/image-to-video"
 _O3_STD_I2V    = "kwaivgi/kling-video-o3-std/image-to-video"
 _O3_PRO_REF    = "kwaivgi/kling-video-o3-pro/reference-to-video"
+_O3_STD_REF    = "kwaivgi/kling-video-o3-std/reference-to-video"
 _O3_PRO_EDIT   = "kwaivgi/kling-video-o3-pro/video-edit"
 _O3_STD_EDIT   = "kwaivgi/kling-video-o3-std/video-edit"
 
@@ -51,6 +53,7 @@ MODEL_IDS: dict[str, str] = {
     "kling_o3_pro":     _O3_PRO_I2V,
     "kling_o3_std":     _O3_STD_I2V,
     "kling_o3_pro_ref": _O3_PRO_REF,
+    "kling_o3_std_ref": _O3_STD_REF,
 }
 
 # Human-readable labels used in notify messages
@@ -63,9 +66,10 @@ MODEL_LABELS: dict[str, str] = {
     "kling_o3_pro":     "Kling O3 Pro",
     "kling_o3_std":     "Kling O3 Std",
     "kling_o3_pro_ref": "Kling O3 Pro Reference",
+    "kling_o3_std_ref": "Kling O3 Std Reference",
 }
 
-_REFERENCE_MODELS = {_O3_PRO_REF}
+_REFERENCE_MODELS = {_O3_PRO_REF, _O3_STD_REF}
 
 # Settings keys whose generation uses the multi_shot storyboard API
 # (same model IDs as normal generation, with multi_shot=True + multi_prompt=[...])

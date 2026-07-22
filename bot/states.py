@@ -37,3 +37,11 @@ class GenerationState(StatesGroup):
     SET_VIDEO_TITLE = State()
     SELECT_PUBLISH_TIME = State()
     SET_PUBLISH_TIME = State()
+
+
+class RemixState(StatesGroup):
+    """States for remix-from-link flow"""
+
+    WAITING_LINK = State()
+    ANALYZING = State()
+    CONFIRM_FORMULA = State()
