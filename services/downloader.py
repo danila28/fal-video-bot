@@ -51,6 +51,13 @@ class DownloaderService:
                     "key": "FFmpegVideoConvertor",
                     "preferedformat": "mp4",
                 }],
+                # YouTube требует cookies для некоторых видео
+                "cookies_from_browser": None,
+                "extractor_args": {
+                    "youtube": {
+                        "skip": ["dash", "translated_subs"],
+                    }
+                },
             }
 
             def _download():
