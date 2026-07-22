@@ -184,6 +184,13 @@ async def _show_remix_formula(
     text += f"🌐 Language: {html.escape(str(metadata.get('detected_language', '—')))}\n"
     if ref_dur:
         text += f"⏱ Reference: {ref_dur}s → your video: {target_duration}s (change in ⚙️ Settings)\n"
+        if target_duration < float(ref_dur) * 0.6:
+            text += (
+                f"\n⚠️ Target ({target_duration}s) is much shorter than the reference ({ref_dur}s) — "
+                "the whole formula gets squeezed into fewer scenes and loses its pacing. "
+                f"Recommended: set ⏱ Duration to ~{max(15, round(float(ref_dur) / 5) * 5)}s in ⚙️ Settings, "
+                "then re-send the video.\n"
+            )
     text += f"\n<b>Structure ({len(shots)} scenes):</b>\n"
 
     for i, shot in enumerate(shots, 1):
@@ -220,19 +227,11 @@ async def handle_confirm_formula(query: CallbackQuery, state: FSMContext):
 
     import json
     shots = analysis.get("shots", [])
-    script_json = json.dumps(
-        {
-            "title": analysis.get("title", ""),
-            "voiceover": analysis.get("voiceover", ""),
-            "shots": shots,
-        },
-        ensure_ascii=False,
-    )
 
     gemini = container.inject(GeminiService)
-    scene, voiceover = _split_video_prompt(script_json, gemini)
 
-    # Rich concept text — used as the source for reference-image prompts.
+    # Rich concept text — fallback source for reference-image prompts when the
+    # analysis didn't return a dedicated image_prompt.
     scenario_text = "\n".join(
         filter(None, [
             analysis.get("title", ""),
@@ -257,8 +256,11 @@ async def handle_confirm_formula(query: CallbackQuery, state: FSMContext):
         )
         try:
             imagegen = container.inject(ImageGenService)
+            # The analysis returns a dedicated character+style description in
+            # English — a far better photo source than the scenario mashup.
+            image_source = analysis.get("image_prompt") or scenario_text
             image_prompt = await _build_image_prompt(
-                scenario_text, settings, gemini, strict_script=True
+                image_source, settings, gemini, strict_script=True
             )
             image_paths = await imagegen.generate_many(
                 prompt=image_prompt,
@@ -280,6 +282,25 @@ async def handle_confirm_formula(query: CallbackQuery, state: FSMContext):
             await query.message.answer("⚠️ Image generation failed — continuing without reference images.")
         finally:
             await state.update_data(generation_in_progress=False)
+
+    # Reference models route prompts through @ImageN tags — the analysis
+    # doesn't know about them, so anchor every shot to the generated photos.
+    if video_model.endswith("_ref") and image_paths:
+        tags = ", ".join(f"@Image{i + 1}" for i in range(len(image_paths)))
+        shots = [
+            {**s, "scene_prompt": f"Use {tags} as the character/style reference. {s.get('scene_prompt', '')}"}
+            for s in shots
+        ]
+
+    script_json = json.dumps(
+        {
+            "title": analysis.get("title", ""),
+            "voiceover": analysis.get("voiceover", ""),
+            "shots": shots,
+        },
+        ensure_ascii=False,
+    )
+    scene, voiceover = _split_video_prompt(script_json, gemini)
 
     # Fill exactly the state keys the vp_ok handler in generation.py consumes:
     # video_scene / video_voiceover / video_script_json (+ image_paths).

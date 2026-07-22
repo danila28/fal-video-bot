@@ -904,15 +904,17 @@ class GeminiService:
                 "pacing and narrative formula — not a copy.\n"
                 "Return ONLY a valid JSON object with this exact structure:\n"
                 "{\n"
-                '  "title": "catchy hook or title",\n'
+                '  "title": "catchy hook or title — MUST be in the same language as the reference speech/captions",\n'
                 '  "voiceover": "rewritten narration that fits the target duration, empty string if the reference has no speech",\n'
+                '  "image_prompt": "one rich ENGLISH description (60-100 words) of the main character AND the visual style '
+                '(art style, palette, lighting, mood) — used to generate reference photos that anchor every scene",\n'
                 '  "metadata": {\n'
                 '    "detected_language": "en",\n'
                 '    "detected_tone": "upbeat|serious|funny|educational|mixed",\n'
                 '    "detected_tempo": "fast|medium|slow"\n'
                 '  },\n'
                 '  "shots": [\n'
-                '    {"scene_prompt": "detailed visual description", '
+                '    {"scene_prompt": "detailed visual description, 40-80 words", '
                 '"duration_seconds": 5, "transition": "cut|dissolve|fade"},\n'
                 '    ...\n'
                 '  ]\n'
@@ -935,6 +937,9 @@ class GeminiService:
                 "(e.g. 'a young woman with long dark hair'), never names or logos.\n"
                 "- No URLs, copyright notices or watermarks in descriptions.\n"
                 "- Focus on: camera angle & motion, lighting, color palette, subject action, composition.\n"
+                "- Each scene_prompt must be RICH (40-80 words): what happens, how the camera moves, "
+                "what the light and colors do, what emotion the moment carries. Thin one-line prompts "
+                "produce flat, generic clips.\n"
                 "- If one recurring character appears in several shots, describe them IDENTICALLY "
                 "in every shot where they appear (same wording), so generated scenes stay consistent."
             )
