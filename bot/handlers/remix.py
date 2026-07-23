@@ -41,6 +41,7 @@ from bot.handlers.common import (
     _build_image_prompt,
     _clip_duration_for_model,
     _is_generating,
+    _kling_min_clip_duration,
     _show_video_prompt,
     _split_video_prompt,
 )
@@ -63,7 +64,7 @@ def _plan_shots(settings: dict, target_duration: int | None = None):
     video_model = (settings.get("video_model") or "seedance").lower()
     clip_dur = _clip_duration_for_model(video_model)
     num_scenes = max(1, math.ceil(target / clip_dur))
-    min_shot = 3 if video_model.startswith("kling") else 4
+    min_shot = _kling_min_clip_duration(video_model) if video_model.startswith("kling") else 4
     return target, video_model, clip_dur, num_scenes, min_shot
 
 

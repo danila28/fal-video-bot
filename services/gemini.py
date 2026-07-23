@@ -63,29 +63,31 @@ class GeminiService:
         ]
 
     def get_video_models(self):
-        # Atlas Cloud scene generation models. Pricing is approximate; verify at atlascloud.ai/pricing.
+        # Atlas Cloud scene generation models. Pricing per the Atlas Cloud Video
+        # Models Guidelines (July 2026, promotional rates) — verify at
+        # atlascloud.ai/pricing/models before relying on exact numbers.
         # Entries with separator=True render as non-clickable section headers in the keyboard.
         # "price" is the full button label shown to the user — keep it short and
         # self-contained (model name + type + price) so it reads fine on a phone
         # without depending on the section header above it.
         return [
             {"separator": True, "label": "── Seedance ──"},
-            {"name": "seedance",           "price": "🖼 Seedance I2V · $0.08/s"},
-            {"name": "seedance_fast",      "price": "🖼⚡ Seedance Fast I2V · $0.05/s"},
+            {"name": "seedance",           "price": "🖼 Seedance I2V · $0.09/s"},
+            {"name": "seedance_fast",      "price": "🖼⚡ Seedance Fast I2V · $0.072/s"},
             {"name": "seedance_mini",      "price": "🖼💰 Seedance Mini I2V · $0.045/s"},
-            {"name": "seedance_t2v",       "price": "📝 Seedance T2V · $0.08/s"},
+            {"name": "seedance_t2v",       "price": "📝 Seedance T2V · $0.09/s"},
             {"name": "seedance_mini_t2v",  "price": "📝💰 Seedance Mini T2V · $0.045/s"},
-            {"name": "seedance_ref",       "price": "🎭 Seedance Ref · $0.08/s"},
-            {"name": "seedance_fast_ref",  "price": "🎭⚡ Seedance Fast Ref · $0.05/s"},
+            {"name": "seedance_ref",       "price": "🎭 Seedance Ref · $0.09/s"},
+            {"name": "seedance_fast_ref",  "price": "🎭⚡ Seedance Fast Ref · $0.072/s"},
             {"separator": True, "label": "── Kling ──"},
-            {"name": "kling",              "price": "🖼 Kling v3 Pro I2V · $0.10/s"},
-            {"name": "kling_v3_std",       "price": "🖼 Kling v3 Std I2V · $0.07/s"},
-            {"name": "kling_turbo",        "price": "🖼⚡ Kling v3 Turbo I2V · $0.05/s"},
-            {"name": "kling_o3_pro",       "price": "🏆 Kling O3 Pro I2V · $0.14/s"},
+            {"name": "kling",              "price": "🖼 Kling v3 Pro I2V · $0.095/s"},
+            {"name": "kling_v3_std",       "price": "🖼 Kling v3 Std I2V · $0.071/s"},
+            {"name": "kling_turbo",        "price": "🖼⚡ Kling v3 Turbo I2V · $0.095/s"},
+            {"name": "kling_o3_pro",       "price": "🏆 Kling O3 Pro I2V · $0.126/s"},
             {"name": "kling_o3_std",       "price": "🖼 Kling O3 Std I2V · $0.10/s"},
-            {"name": "kling_t2v",          "price": "📝 Kling v3 Pro T2V · $0.10/s"},
-            {"name": "kling_turbo_t2v",    "price": "📝⚡ Kling v3 Turbo T2V · $0.05/s"},
-            {"name": "kling_o3_pro_ref",   "price": "🎭 Kling O3 Pro Ref · $0.14/s"},
+            {"name": "kling_t2v",          "price": "📝 Kling v3 Pro T2V · $0.095/s"},
+            {"name": "kling_turbo_t2v",    "price": "📝⚡ Kling v3 Turbo T2V · $0.095/s"},
+            {"name": "kling_o3_pro_ref",   "price": "🎭 Kling O3 Pro Ref · $0.126/s"},
             {"name": "kling_o3_std_ref",   "price": "🎭 Kling O3 Std Ref · $0.10/s"},
         ]
 
