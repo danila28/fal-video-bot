@@ -8,6 +8,15 @@ class EditingState(StatesGroup):
     WAITING_VIDEO_COMMAND = State()
 
 
+class EditorState(StatesGroup):
+    """States for the AI Editor flow (Gemini Omni Flash video edit)."""
+
+    WAITING_VIDEO = State()
+    WAITING_INSTRUCTION = State()
+    CONFIRM = State()
+    RESULT = State()
+
+
 class GenerationState(StatesGroup):
     """States for the video generation process"""
 

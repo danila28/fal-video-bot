@@ -115,7 +115,8 @@ async def _begin_generation(message: Message, state: FSMContext):
 @router.message(Command("start"), IsAllowed(allowed_users))
 async def handle_start(message: Message, state: FSMContext):
     await message.answer(
-        "Welcome! Tap 🎬 Generate video to start or ⚙️ Settings to configure the bot.",
+        "Welcome! Tap 🎬 Generate video to create a video from an idea, "
+        "🎨 AI Editor to edit your own video, or ⚙️ Settings to configure the bot.",
         reply_markup=get_persistent_keyboard(),
     )
     await _begin_generation(message, state)

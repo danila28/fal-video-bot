@@ -8,6 +8,7 @@ from aiogram.types import (
 
 SETTINGS_BUTTON_TEXT = "⚙️ Settings"
 GENERATE_BUTTON_TEXT = "🎬 Generate video"
+EDITOR_BUTTON_TEXT = "🎨 AI Editor"
 
 
 def get_persistent_keyboard():
@@ -15,6 +16,7 @@ def get_persistent_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=GENERATE_BUTTON_TEXT)],
+            [KeyboardButton(text=EDITOR_BUTTON_TEXT)],
             [KeyboardButton(text=SETTINGS_BUTTON_TEXT)],
         ],
         resize_keyboard=True,
@@ -280,5 +282,48 @@ def get_ref_image_mode_keyboard():
         inline_keyboard=[
             [InlineKeyboardButton(text="✍️ Own descriptions", callback_data="ref_mode:manual")],
             [InlineKeyboardButton(text="🤖 Bot decides", callback_data="ref_mode:auto")],
+        ]
+    )
+
+
+# ── AI Editor ────────────────────────────────────────────────────────────────
+
+def get_editor_templates_keyboard():
+    """Common-edit templates shown while waiting for the edit instruction."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📦 Insert my product", callback_data="editor:tpl:product")],
+            [
+                InlineKeyboardButton(text="🖼 Change background", callback_data="editor:tpl:background"),
+                InlineKeyboardButton(text="🌦 Weather / time", callback_data="editor:tpl:weather"),
+            ],
+            [
+                InlineKeyboardButton(text="🎨 Change art style", callback_data="editor:tpl:style"),
+                InlineKeyboardButton(text="➖ Remove object", callback_data="editor:tpl:remove"),
+            ],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="editor:cancel")],
+        ]
+    )
+
+
+def get_editor_confirm_keyboard(price: float):
+    """Confirm screen: run the paid edit, retype, or bail out."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🎯 Edit video · ~${price:.2f}", callback_data="editor:go"
+            )],
+            [InlineKeyboardButton(text="✏️ Change instruction", callback_data="editor:retype")],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="editor:cancel")],
+        ]
+    )
+
+
+def get_editor_result_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Edit again", callback_data="editor:again")],
+            [InlineKeyboardButton(text="📤 Publish", callback_data="editor:publish")],
+            [InlineKeyboardButton(text="✅ Done", callback_data="editor:done")],
         ]
     )
