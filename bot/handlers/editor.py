@@ -348,10 +348,18 @@ async def handle_editor_go(query: CallbackQuery, state: FSMContext):
     except Exception as e:
         logger.exception("Omni edit failed")
         err = str(e)
-        if "insufficient balance" in err.lower() or '"code":402' in err:
+        low = err.lower()
+        if "insufficient balance" in low or '"code":402' in err:
             err = (
                 "💳 Atlas Cloud balance is empty — top it up at atlascloud.ai "
                 "and try again."
+            )
+        elif "restricted individuals" in low or "responsible ai" in low:
+            err = (
+                "🚫 Google's safety filter rejected this video: it detected a "
+                "recognizable person it restricts (celebrities/public figures).\n"
+                "This is Google's policy, not a bot error — no charge is made.\n"
+                "Try a video without recognizable faces, or crop/blur the person."
             )
         await query.message.answer(f"❌ Edit failed: {err}")
         await _show_confirm(query.message, state)
