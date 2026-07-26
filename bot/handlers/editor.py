@@ -212,7 +212,8 @@ async def _show_confirm(message: Message, state: FSMContext) -> None:
         + f"⏱ {duration:.0f}s source video\n\n"
         f"Model: Gemini Omni Flash Video Edit — changes only what you asked, "
         f"preserves the rest of the footage.\n"
-        f"💰 Estimated cost: ~${price:.2f} (billed per second of source video)\n\n"
+        f"💰 Estimated cost: ~${price:.2f} (billed per second of source video)\n"
+        "💡 Cost scales with source length — trim the video to pay less.\n\n"
         "🚫 No face swaps onto real, recognizable people."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_editor_confirm_keyboard(price))
