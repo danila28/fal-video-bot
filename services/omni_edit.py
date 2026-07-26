@@ -53,13 +53,15 @@ class OmniEditService:
         reference_image_paths: up to 5 images guiding the edit (e.g. a product
         to insert). thinking_level: default | high | low — latency vs quality
         on complex edits.
+
+        Output resolution/aspect/duration inherit from the source video —
+        Atlas does not accept resolution parameter for video-edit.
         """
         video_url = await self._atlas.upload_file(video_path)
 
         params: dict = {
             "prompt": prompt,
             "video": video_url,
-            "resolution": "720p",
         }
         if thinking_level != "default":
             params["thinking_level"] = thinking_level
