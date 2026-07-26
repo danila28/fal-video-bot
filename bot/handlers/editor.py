@@ -21,6 +21,8 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from bot.guard import IsAllowed
 from bot.keyboards import (
     EDITOR_BUTTON_TEXT,
+    GENERATE_BUTTON_TEXT,
+    SETTINGS_BUTTON_TEXT,
     get_editor_confirm_keyboard,
     get_editor_result_keyboard,
     get_editor_templates_keyboard,
@@ -44,6 +46,11 @@ logger = logging.getLogger(__name__)
 
 # Telegram Bot API refuses to serve files larger than 20 MB to bots.
 _TG_BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024
+
+# Persistent-menu button texts must never be consumed as user input by the
+# editor's text handlers — they fall through to their own entry handlers.
+_MENU_TEXTS = {GENERATE_BUTTON_TEXT, SETTINGS_BUTTON_TEXT, EDITOR_BUTTON_TEXT}
+_NOT_MENU_TEXT = F.text & ~F.text.in_(_MENU_TEXTS)
 
 # Instruction templates for the quick-edit buttons. Each is a starting point
 # the user completes with specifics in their own words.
@@ -164,7 +171,7 @@ async def handle_editor_video(message: Message, state: FSMContext):
     await state.set_state(EditorState.WAITING_INSTRUCTION)
 
 
-@router.message(EditorState.WAITING_VIDEO, F.text, IsAllowed(allowed_users))
+@router.message(EditorState.WAITING_VIDEO, _NOT_MENU_TEXT, IsAllowed(allowed_users))
 async def handle_editor_video_text(message: Message, state: FSMContext):
     if (message.text or "").strip().startswith(("http://", "https://")):
         await message.answer(
@@ -257,7 +264,7 @@ async def handle_editor_reference(message: Message, state: FSMContext):
         )
 
 
-@router.message(EditorState.WAITING_INSTRUCTION, F.text, IsAllowed(allowed_users))
+@router.message(EditorState.WAITING_INSTRUCTION, _NOT_MENU_TEXT, IsAllowed(allowed_users))
 async def handle_editor_instruction(message: Message, state: FSMContext):
     instruction = (message.text or "").strip()
     if len(instruction) < 3:
@@ -267,7 +274,7 @@ async def handle_editor_instruction(message: Message, state: FSMContext):
     await _show_confirm(message, state)
 
 
-@router.message(EditorState.CONFIRM, F.text, IsAllowed(allowed_users))
+@router.message(EditorState.CONFIRM, _NOT_MENU_TEXT, IsAllowed(allowed_users))
 async def handle_editor_confirm_text(message: Message, state: FSMContext):
     """Text sent on the confirm screen replaces the instruction."""
     instruction = (message.text or "").strip()
