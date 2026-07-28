@@ -1,10 +1,12 @@
-"""AI Editor flow: user uploads THEIR OWN video → describes an edit in text
-(optionally attaching reference photos, e.g. a product) → Gemini Omni Flash
-(task=edit via Atlas Cloud) transforms the footage while preserving everything
-the instruction doesn't touch.
+"""AI Editor flow: user uploads THEIR OWN video → picks an engine (Gemini
+Omni Flash or Wan 2.7, explicit choice — no automatic fallback between them)
+→ describes an edit in text (optionally attaching reference photos, e.g. a
+product) → the chosen engine transforms the footage while preserving
+everything the instruction doesn't touch.
 
 Successive edits chain manually: the previous result becomes the next source
-video (Atlas doesn't expose Gemini's previous_interaction_id).
+video (Atlas doesn't expose Gemini's previous_interaction_id), and the user
+re-picks the engine for each round.
 """
 
 import asyncio
@@ -24,6 +26,7 @@ from bot.keyboards import (
     GENERATE_BUTTON_TEXT,
     SETTINGS_BUTTON_TEXT,
     get_editor_confirm_keyboard,
+    get_editor_engine_keyboard,
     get_editor_result_keyboard,
     get_editor_templates_keyboard,
     get_publish_keyboard,
@@ -35,8 +38,9 @@ from services.omni_edit import (
     MAX_REFERENCE_IMAGES,
     MAX_SOURCE_SECONDS,
     OmniEditService,
-    estimate_price,
+    estimate_price as estimate_price_omni,
 )
+from services.wan import WanEditService, estimate_price as estimate_price_wan
 from utils import container
 from utils.consts import allowed_users
 from bot.handlers.common import _is_generating
@@ -54,6 +58,23 @@ _NOT_MENU_TEXT = F.text & ~F.text.in_(_MENU_TEXTS)
 
 # Instruction templates for the quick-edit buttons. Each is a starting point
 # the user completes with specifics in their own words.
+# Explicit engine choice — no automatic fallback between them. The user
+# always picks which model runs the edit, since Omni's real-people block is
+# a hard model-level restriction while Wan's tolerance is unverified on our
+# own footage.
+_ENGINES: dict[str, dict] = {
+    "omni": {
+        "label": "Gemini Omni Flash Video Edit",
+        "service_cls": OmniEditService,
+        "estimate_price": estimate_price_omni,
+    },
+    "wan": {
+        "label": "Wan 2.7 Video-Edit",
+        "service_cls": WanEditService,
+        "estimate_price": estimate_price_wan,
+    },
+}
+
 _TEMPLATES: dict[str, str] = {
     "product": (
         "📦 Insert product — send your product photo as a FILE (not a gallery "
@@ -161,6 +182,24 @@ async def handle_editor_video(message: Message, state: FSMContext):
     )
     await status.edit_text(f"✅ Video received ({duration:.0f}s).")
     await message.answer(
+        "⚙️ Which engine should edit this video?",
+        reply_markup=get_editor_engine_keyboard(),
+    )
+    await state.set_state(EditorState.SELECT_ENGINE)
+
+
+@router.callback_query(
+    EditorState.SELECT_ENGINE, F.data.startswith("editor:engine:"), IsAllowed(allowed_users)
+)
+async def handle_editor_engine_choice(query: CallbackQuery, state: FSMContext):
+    await query.answer()
+    engine = query.data.rsplit(":", 1)[1]
+    if engine not in _ENGINES:
+        return
+    await state.update_data(editor_engine=engine)
+    await query.message.edit_reply_markup(reply_markup=None)
+    await query.message.answer(
+        f"✅ Engine: {_ENGINES[engine]['label']}\n\n"
         "✏️ What should I change? Describe it in text.\n\n"
         "You can also attach up to "
         f"{MAX_REFERENCE_IMAGES} reference photos (e.g. your product) — send "
@@ -204,17 +243,25 @@ async def _show_confirm(message: Message, state: FSMContext) -> None:
     instruction = data.get("editor_instruction", "")
     refs = data.get("editor_ref_paths") or []
     duration = float(data.get("editor_video_duration") or 0)
-    price = estimate_price(duration)
+    engine = data.get("editor_engine", "omni")
+    engine_info = _ENGINES.get(engine, _ENGINES["omni"])
+    price = engine_info["estimate_price"](duration)
 
     text = (
         f"✏️ <b>Edit:</b> {html.escape(instruction)}\n"
         + (f"📎 {len(refs)} reference photo(s)\n" if refs else "")
         + f"⏱ {duration:.0f}s source video\n\n"
-        f"Model: Gemini Omni Flash Video Edit — changes only what you asked, "
+        f"Model: {engine_info['label']} — changes only what you asked, "
         f"preserves the rest of the footage.\n"
         f"💰 Estimated cost: ~${price:.2f} (billed per second of source video)\n"
         "💡 Cost scales with source length — trim the video to pay less.\n\n"
-        "🚫 No face swaps onto real, recognizable people."
+        + (
+            "🚫 No face swaps onto real, recognizable people — Google's filter "
+            "blocks these outright.\n"
+            if engine == "omni"
+            else "⚠️ Untested on real people — Wan's tolerance for this hasn't "
+            "been verified on our own footage.\n"
+        )
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_editor_confirm_keyboard(price))
     await state.set_state(EditorState.CONFIRM)
@@ -329,8 +376,9 @@ async def handle_editor_go(query: CallbackQuery, state: FSMContext):
     await query.message.answer("⏳ Editing the video — this usually takes 2-4 minutes…")
 
     try:
-        omni = container.inject(OmniEditService)
-        result_path = await omni.edit_video(
+        engine = data.get("editor_engine", "omni")
+        service = container.inject(_ENGINES.get(engine, _ENGINES["omni"])["service_cls"])
+        result_path = await service.edit_video(
             video_path, instruction, reference_image_paths=refs
         )
 
@@ -346,7 +394,7 @@ async def handle_editor_go(query: CallbackQuery, state: FSMContext):
         )
         await state.set_state(EditorState.RESULT)
     except Exception as e:
-        logger.exception("Omni edit failed")
+        logger.exception(f"Editor edit failed (engine={data.get('editor_engine', 'omni')})")
         err = str(e)
         low = err.lower()
         if "insufficient balance" in low or '"code":402' in err:
@@ -391,10 +439,10 @@ async def handle_editor_again(query: CallbackQuery, state: FSMContext):
         editor_instruction="",
     )
     await query.message.answer(
-        "🔁 Editing the LAST RESULT. What should I change now?",
-        reply_markup=get_editor_templates_keyboard(),
+        "🔁 Editing the LAST RESULT. Which engine should run this edit?",
+        reply_markup=get_editor_engine_keyboard(),
     )
-    await state.set_state(EditorState.WAITING_INSTRUCTION)
+    await state.set_state(EditorState.SELECT_ENGINE)
 
 
 @router.callback_query(EditorState.RESULT, F.data == "editor:publish", IsAllowed(allowed_users))

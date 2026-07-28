@@ -288,6 +288,24 @@ def get_ref_image_mode_keyboard():
 
 # ── AI Editor ────────────────────────────────────────────────────────────────
 
+def get_editor_engine_keyboard():
+    """Explicit engine choice shown right after the source video is set —
+    no automatic fallback, the user always picks which model runs the edit."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🔵 Gemini Omni Flash — $0.14/s, blocks real people",
+                callback_data="editor:engine:omni",
+            )],
+            [InlineKeyboardButton(
+                text="🟠 Wan 2.7 — $0.10/s, more tolerant of people",
+                callback_data="editor:engine:wan",
+            )],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="editor:cancel")],
+        ]
+    )
+
+
 def get_editor_templates_keyboard():
     """Common-edit templates shown while waiting for the edit instruction."""
     return InlineKeyboardMarkup(
