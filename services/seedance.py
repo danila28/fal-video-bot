@@ -74,6 +74,30 @@ MODEL_LABELS: dict[str, str] = {
 
 _REFERENCE_MODELS = {_REF, _FAST_REF}
 
+# ── Video-Edit (via reference-to-video, passing the source as a video ref) ──
+# UNVERIFIED: reference_images/reference_videos/reference_audios field names
+# come from an Atlas Cloud code sample found via search, not a direct fetch
+# of the live docs — confirm against the first real request/error before
+# trusting this in production (Atlas's error text is usually specific enough
+# to correct a wrong field name, same as how the Kling multi_prompt 512-char
+# limit was discovered).
+MAX_EDIT_REFERENCE_IMAGES = 5
+_MAX_EDIT_DURATION = _MAX_CALL_DURATION  # 15s — one Atlas call limit
+
+# Price per second of SOURCE video — UNVERIFIED, conflicting figures seen
+# across sources ($0.081-0.247/s depending on tier). Using the Fast tier's
+# most-repeated figure as a placeholder; check the Atlas dashboard/first
+# invoice and correct before relying on the price shown to users.
+EDIT_PRICE_PER_SECOND = 0.08
+EDIT_BILL_MIN_SECONDS = 3
+EDIT_BILL_MAX_SECONDS = 15
+
+
+def estimate_edit_price(duration_seconds: float) -> float:
+    """Cost of one Seedance video-edit run — UNVERIFIED, see note above."""
+    billed = max(EDIT_BILL_MIN_SECONDS, min(EDIT_BILL_MAX_SECONDS, duration_seconds))
+    return billed * EDIT_PRICE_PER_SECOND
+
 
 class SeedanceService:
     def __init__(self, api_key: str, static_dir: str = ""):
@@ -164,6 +188,48 @@ class SeedanceService:
         )
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
+
+    async def edit_video(
+        self,
+        video_path: str,
+        prompt: str,
+        reference_image_paths: list[str] | None = None,
+        use_fast: bool = False,
+    ) -> str:
+        """Edit an existing video via Seedance's reference-to-video endpoint,
+        passing the source as a video reference. Returns local path to MP4.
+
+        Signature matches OmniEditService/WanEditService.edit_video so the
+        AI Editor can call any of the three engines interchangeably.
+        """
+        os.makedirs(self.static_dir, exist_ok=True)
+        duration = await asyncio.to_thread(self._probe_duration, video_path)
+        duration = max(4, min(_MAX_EDIT_DURATION, round(duration)))
+
+        video_url = await self._atlas.upload_file(video_path)
+        logger.info(f"Seedance: uploaded source video {video_path} → {video_url}")
+
+        refs = (reference_image_paths or [])[:MAX_EDIT_REFERENCE_IMAGES]
+        image_urls = [await self._atlas.upload_file(p) for p in refs]
+
+        model = _FAST_REF if use_fast else _REF
+        params: dict = {
+            "prompt": prompt,
+            "reference_videos": [video_url],
+            "duration": duration,
+            "resolution": "720p",
+            "generate_audio": False,
+            "watermark": False,
+        }
+        if image_urls:
+            params["reference_images"] = image_urls
+
+        logger.info(
+            f"Seedance edit | model={model} | prompt={prompt[:80]!r}"
+            f" | refs={len(image_urls)} | duration={duration}s"
+        )
+        result_url = await self._atlas.generate_video(model, params)
+        return await self._atlas.download(result_url, ext="mp4")
 
     async def generate_multi_scene_clip(
         self,

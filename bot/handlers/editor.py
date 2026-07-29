@@ -40,6 +40,7 @@ from services.omni_edit import (
     OmniEditService,
     estimate_price as estimate_price_omni,
 )
+from services.seedance import SeedanceService, estimate_edit_price as estimate_price_seedance
 from services.wan import WanEditService, estimate_price as estimate_price_wan
 from utils import container
 from utils.consts import allowed_users
@@ -73,6 +74,26 @@ _ENGINES: dict[str, dict] = {
         "service_cls": WanEditService,
         "estimate_price": estimate_price_wan,
     },
+    "seedance": {
+        "label": "Seedance 2.0 Reference-to-Video (edit)",
+        "service_cls": SeedanceService,
+        "estimate_price": estimate_price_seedance,
+    },
+}
+
+_ENGINE_NOTES: dict[str, str] = {
+    "omni": (
+        "🚫 No face swaps onto real, recognizable people — Google's filter "
+        "blocks these outright.\n"
+    ),
+    "wan": (
+        "⚠️ Untested on real people — Wan's tolerance for this hasn't "
+        "been verified on our own footage.\n"
+    ),
+    "seedance": (
+        "⚠️ Experimental integration — parameter names and pricing for this "
+        "engine are unverified, first runs may fail or the price may be off.\n"
+    ),
 }
 
 _TEMPLATES: dict[str, str] = {
@@ -255,13 +276,7 @@ async def _show_confirm(message: Message, state: FSMContext) -> None:
         f"preserves the rest of the footage.\n"
         f"💰 Estimated cost: ~${price:.2f} (billed per second of source video)\n"
         "💡 Cost scales with source length — trim the video to pay less.\n\n"
-        + (
-            "🚫 No face swaps onto real, recognizable people — Google's filter "
-            "blocks these outright.\n"
-            if engine == "omni"
-            else "⚠️ Untested on real people — Wan's tolerance for this hasn't "
-            "been verified on our own footage.\n"
-        )
+        + _ENGINE_NOTES.get(engine, _ENGINE_NOTES["omni"])
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_editor_confirm_keyboard(price))
     await state.set_state(EditorState.CONFIRM)

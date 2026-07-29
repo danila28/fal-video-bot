@@ -304,6 +304,10 @@ def get_editor_engine_keyboard():
                 text="🟠 Wan 2.7 — $0.10/s, more tolerant of people",
                 callback_data="editor:engine:wan",
             )],
+            [InlineKeyboardButton(
+                text="🟢 Seedance 2.0 — ~$0.08/s (price unverified)",
+                callback_data="editor:engine:seedance",
+            )],
             [InlineKeyboardButton(text="❌ Cancel", callback_data="editor:cancel")],
         ]
     )
