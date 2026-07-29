@@ -75,12 +75,13 @@ MODEL_LABELS: dict[str, str] = {
 _REFERENCE_MODELS = {_REF, _FAST_REF}
 
 # ── Video-Edit (via reference-to-video, passing the source as a video ref) ──
-# UNVERIFIED: reference_images/reference_videos/reference_audios field names
-# come from an Atlas Cloud code sample found via search, not a direct fetch
-# of the live docs — confirm against the first real request/error before
-# trusting this in production (Atlas's error text is usually specific enough
-# to correct a wrong field name, same as how the Kling multi_prompt 512-char
-# limit was discovered).
+# UNVERIFIED: reference_images/reference_videos/reference_audios field names,
+# AND the @Video1/@ImageN tagging convention used to bind them in the prompt,
+# come from Atlas Cloud docs/marketing found via search, not a direct fetch
+# of the live API reference — confirm against the first real request/error
+# before trusting this in production (Atlas's error text is usually specific
+# enough to correct a wrong field name, same as how the Kling multi_prompt
+# 512-char limit and the FpsTooHigh source-fps limit were discovered).
 MAX_EDIT_REFERENCE_IMAGES = 5
 _MAX_EDIT_DURATION = _MAX_CALL_DURATION  # 15s — one Atlas call limit
 
@@ -220,9 +221,22 @@ class SeedanceService:
         refs = (reference_image_paths or [])[:MAX_EDIT_REFERENCE_IMAGES]
         image_urls = [await self._atlas.upload_file(p) for p in refs]
 
+        # Seedance's reference-to-video names each uploaded reference (@Video1
+        # for a video ref, @Image1.. for image refs) and expects the prompt to
+        # address them by tag — unlike Omni/Wan, which bind plain natural
+        # language ("insert the product from the reference photo") to the
+        # right reference on their own. Without the tag the model may not
+        # know the @Image1 product photo belongs *in* @Video1's scene.
+        tags = [] if "@Video1" in prompt else ["@Video1"]
+        tags += [
+            f"@Image{i + 1}" for i in range(len(image_urls))
+            if f"@Image{i + 1}" not in prompt
+        ]
+        tagged_prompt = f"{' '.join(tags)} {prompt}" if tags else prompt
+
         model = _FAST_REF if use_fast else _REF
         params: dict = {
-            "prompt": prompt,
+            "prompt": tagged_prompt,
             "reference_videos": [video_url],
             "duration": duration,
             "resolution": "720p",
@@ -233,7 +247,7 @@ class SeedanceService:
             params["reference_images"] = image_urls
 
         logger.info(
-            f"Seedance edit | model={model} | prompt={prompt[:80]!r}"
+            f"Seedance edit | model={model} | prompt={tagged_prompt[:80]!r}"
             f" | refs={len(image_urls)} | duration={duration}s"
         )
         result_url = await self._atlas.generate_video(model, params)

@@ -102,7 +102,10 @@ _TEMPLATES: dict[str, str] = {
         "photo — Telegram compresses those and details get lost), then send "
         "the instruction, e.g.:\n\n"
         "<code>Insert the product from the reference photo into the scene — "
-        "place it on the table, keep the original lighting</code>"
+        "place it on the table, keep the original lighting</code>\n\n"
+        "Works on all 3 engines — just describe it in plain language, no "
+        "special tags needed (Seedance adds its own reference tags "
+        "automatically behind the scenes)."
     ),
     "background": (
         "🖼 Change background — send the instruction, e.g.:\n\n"
