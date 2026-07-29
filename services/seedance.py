@@ -206,8 +206,16 @@ class SeedanceService:
         duration = await asyncio.to_thread(self._probe_duration, video_path)
         duration = max(4, min(_MAX_EDIT_DURATION, round(duration)))
 
-        video_url = await self._atlas.upload_file(video_path)
-        logger.info(f"Seedance: uploaded source video {video_path} → {video_url}")
+        # Atlas rejects sources outside 23.8-60 FPS (ret: InvalidParameter.FpsTooHigh) —
+        # slow-mo phone captures (120/240fps) are common enough to normalize upfront.
+        fps = await asyncio.to_thread(self._probe_fps, video_path)
+        upload_path = video_path
+        if fps < 23.8 or fps > 60:
+            logger.info(f"Seedance edit: source fps={fps:.1f} out of range — resampling to 30fps")
+            upload_path = await asyncio.to_thread(self._normalize_fps, video_path)
+
+        video_url = await self._atlas.upload_file(upload_path)
+        logger.info(f"Seedance: uploaded source video {upload_path} → {video_url}")
 
         refs = (reference_image_paths or [])[:MAX_EDIT_REFERENCE_IMAGES]
         image_urls = [await self._atlas.upload_file(p) for p in refs]
@@ -409,3 +417,37 @@ class SeedanceService:
         except Exception as e:
             logger.warning(f"ffprobe failed: {e}")
         return 10.0
+
+    @staticmethod
+    def _probe_fps(video_path: str) -> float:
+        try:
+            import ffmpeg
+            info = ffmpeg.probe(video_path)
+            for stream in info.get("streams", []):
+                if stream.get("codec_type") != "video":
+                    continue
+                rate = stream.get("avg_frame_rate") or stream.get("r_frame_rate") or ""
+                if "/" in rate:
+                    num, den = rate.split("/")
+                    if float(den):
+                        return float(num) / float(den)
+                elif rate:
+                    return float(rate)
+        except Exception as e:
+            logger.warning(f"fps probe failed: {e}")
+        return 30.0
+
+    @staticmethod
+    def _normalize_fps(video_path: str, target_fps: int = 30) -> str:
+        """Re-encode to target_fps. Atlas's Seedance edit rejects anything
+        outside 23.8-60 FPS (e.g. 120/240fps slow-mo phone captures)."""
+        import ffmpeg
+        base, ext = os.path.splitext(video_path)
+        out_path = f"{base}_fps{target_fps}{ext}"
+        (
+            ffmpeg.input(video_path)
+            .output(out_path, r=target_fps, vcodec="libx264", acodec="copy")
+            .overwrite_output()
+            .run(quiet=True)
+        )
+        return out_path
