@@ -237,7 +237,22 @@ class SeedanceService:
             f" | refs={len(image_urls)} | duration={duration}s"
         )
         result_url = await self._atlas.generate_video(model, params)
-        return await self._atlas.download(result_url, ext="mp4")
+        result_path = await self._atlas.download(result_url, ext="mp4")
+
+        # reference-to-video doesn't pass the source audio track through, and
+        # generate_audio=False means Atlas returns the edit silent — remux the
+        # original audio back on rather than let Seedance synthesize new ambient
+        # sound (which would replace, not preserve, the source's real audio).
+        has_audio = await asyncio.to_thread(self._has_audio_stream, video_path)
+        if has_audio:
+            try:
+                result_path = await asyncio.to_thread(
+                    self._mux_original_audio, video_path, result_path
+                )
+            except Exception as e:
+                logger.warning(f"Seedance edit: audio remux failed, returning silent result: {e}")
+
+        return result_path
 
     async def generate_multi_scene_clip(
         self,
@@ -436,6 +451,36 @@ class SeedanceService:
         except Exception as e:
             logger.warning(f"fps probe failed: {e}")
         return 30.0
+
+    @staticmethod
+    def _has_audio_stream(video_path: str) -> bool:
+        try:
+            import ffmpeg
+            info = ffmpeg.probe(video_path)
+            return any(s.get("codec_type") == "audio" for s in info.get("streams", []))
+        except Exception as e:
+            logger.warning(f"audio-stream probe failed: {e}")
+            return False
+
+    @staticmethod
+    def _mux_original_audio(source_path: str, edited_path: str) -> str:
+        """Remux the source video's original audio onto the edited output.
+        `shortest` trims to the shorter of the two streams — safe here since
+        the edited clip's duration is always <= the source's."""
+        import ffmpeg
+        base, ext = os.path.splitext(edited_path)
+        out_path = f"{base}_audio{ext}"
+        video_in = ffmpeg.input(edited_path)
+        audio_in = ffmpeg.input(source_path)
+        (
+            ffmpeg.output(
+                video_in.video, audio_in.audio, out_path,
+                vcodec="copy", acodec="aac", shortest=None,
+            )
+            .overwrite_output()
+            .run(quiet=True)
+        )
+        return out_path
 
     @staticmethod
     def _normalize_fps(video_path: str, target_fps: int = 30) -> str:
