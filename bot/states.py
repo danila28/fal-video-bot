@@ -31,6 +31,7 @@ class GenerationState(StatesGroup):
     SET_MUSIC_PATH = State()
     SET_UTC_OFFSET = State()
     SET_CUSTOM_DURATION = State()
+    SET_CUSTOM_SPEED = State()
 
     RAW_PROMPT = State()
     OWN_SCRIPT = State()
