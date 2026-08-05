@@ -166,3 +166,54 @@ class ImageGenService:
         if model in _GEMINI_MODELS:
             return await self._generate_via_gemini(prompt, model)
         raise ValueError(f"Unknown image model '{model}'. Go to ⚙️ Settings → 🖼 Image model and reselect.")
+
+
+# ── User-uploaded photo helpers ─────────────────────────────────────────────
+# Own photos don't come out of a model that already guarantees 9:16 — these
+# validate/normalize them so the rest of the pipeline sees the same shape it
+# always has.
+
+_VERTICAL_W = 1080
+_VERTICAL_H = 1920
+MIN_PHOTO_DIMENSION = 200  # px, either side — below this the model output degrades badly
+
+
+def _probe_image_size(path: str) -> tuple[int, int]:
+    """Return (width, height) of an image via ffprobe. (0, 0) on failure."""
+    try:
+        import ffmpeg
+        info = ffmpeg.probe(path)
+        for stream in info.get("streams", []):
+            w, h = stream.get("width"), stream.get("height")
+            if w and h:
+                return int(w), int(h)
+    except Exception as e:
+        logger.warning(f"Image probe failed for {path}: {e}")
+    return 0, 0
+
+
+async def _normalize_to_vertical(path: str, static_dir: str) -> str:
+    """Center-crop/scale a user-uploaded photo to 9:16 (1080x1920) — the same
+    aspect ratio every AI-generated image already guarantees. Avoids relying
+    on undocumented aspect-ratio handling on the video-model side.
+
+    Returns the path to a new file in `static_dir`; the original is left
+    untouched (caller may remove it).
+    """
+    import ffmpeg
+    os.makedirs(static_dir, exist_ok=True)
+    out_path = os.path.join(static_dir, f"{uuid.uuid4()}_vert.jpg")
+
+    def _run():
+        (
+            ffmpeg
+            .input(path)
+            .filter("scale", _VERTICAL_W, _VERTICAL_H, force_original_aspect_ratio="increase")
+            .filter("crop", _VERTICAL_W, _VERTICAL_H)
+            .output(out_path, **{"q:v": 2})
+            .overwrite_output()
+            .run(quiet=True)
+        )
+
+    await asyncio.to_thread(_run)
+    return out_path

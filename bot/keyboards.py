@@ -286,6 +286,16 @@ def get_ref_image_mode_keyboard():
     )
 
 
+def get_photo_source_keyboard():
+    """Choose whether the photo is AI-generated or uploaded by the user."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🤖 Generate automatically", callback_data="photo_source:auto")],
+            [InlineKeyboardButton(text="📷 Upload my own photo", callback_data="photo_source:own")],
+        ]
+    )
+
+
 # ── AI Editor ────────────────────────────────────────────────────────────────
 
 def get_editor_templates_keyboard():

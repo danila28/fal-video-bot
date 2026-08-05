@@ -9,6 +9,7 @@ import html
 import logging
 import os
 import time
+import uuid
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -19,17 +20,25 @@ from bot.keyboards import (
     get_idea_entry_keyboard,
     get_image_keyboard,
     get_persistent_keyboard,
+    get_photo_source_keyboard,
     get_prompt_keyboard,
     get_publish_keyboard,
     get_ref_image_mode_keyboard,
     get_video_keyboard,
     get_video_prompt_keyboard,
+    EDITOR_BUTTON_TEXT,
     GENERATE_BUTTON_TEXT,
+    SETTINGS_BUTTON_TEXT,
 )
 from bot.states import GenerationState
 from services.db import DBService
 from services.gemini import GeminiService
-from services.imagegen import ImageGenService
+from services.imagegen import (
+    ImageGenService,
+    MIN_PHOTO_DIMENSION,
+    _normalize_to_vertical,
+    _probe_image_size,
+)
 from services.kling import KlingService
 from utils import container
 from utils.consts import allowed_users, generate_hashtags_prompt
@@ -53,6 +62,20 @@ from bot.handlers.common import (
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+# Telegram Bot API refuses to serve files larger than 20 MB to bots.
+_TG_BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024
+
+# Persistent-menu button texts must never be consumed as photo descriptions —
+# they fall through to their own entry handlers.
+_MENU_TEXTS = {GENERATE_BUTTON_TEXT, SETTINGS_BUTTON_TEXT, EDITOR_BUTTON_TEXT}
+_NOT_MENU_TEXT = F.text & ~F.text.in_(_MENU_TEXTS)
+
+_OWN_PHOTO_DISCLAIMER = (
+    "⚠️ Own content only. Uploading photos of real recognizable people "
+    "without their consent, or of public figures, is not supported and may "
+    "be rejected by the safety filter.\n\n"
+)
 
 
 def _is_reference_model(video_model: str) -> bool:
@@ -258,8 +281,9 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
 
 @router.callback_query(GenerationState.ENHANCE_PROMPT, lambda c: c.data == "prompt_ok", IsAllowed(allowed_users))
 async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
-    """Prompt OK → for T2V models skip image and go straight to video prompt;
-    for reference models show mode selection; for I2V models generate image."""
+    """Prompt OK → T2V models skip image and go straight to video prompt;
+    I2V/reference models are asked whether to auto-generate a photo or
+    upload their own, before anything is created."""
     if await _is_generating(state):
         await callback.answer("Already generating — please wait.", show_alert=False)
         return
@@ -270,7 +294,38 @@ async def handle_prompt_ok(callback: CallbackQuery, state: FSMContext):
     settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
     video_model = settings.get("video_model") or ""
 
-    # Reference models: show mode selection before image generation
+    if video_model in _T2V_VIDEO_MODELS:
+        await _proceed_to_media(callback.message, state, callback.from_user.id, callback.message.chat.id)
+        return
+
+    await callback.message.answer(
+        "How should the photo be sourced?",
+        reply_markup=get_photo_source_keyboard(),
+    )
+    await state.set_state(GenerationState.SELECT_PHOTO_SOURCE)
+
+
+@router.callback_query(
+    GenerationState.SELECT_PHOTO_SOURCE,
+    lambda c: c.data.startswith("photo_source:"),
+    IsAllowed(allowed_users),
+)
+async def handle_photo_source_select(callback: CallbackQuery, state: FSMContext):
+    """'auto' replays the pre-existing generation flow unchanged; 'own' starts
+    the new upload flow."""
+    source = callback.data.split(":", 1)[1]
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    db = container.inject(DBService)
+    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    video_model = settings.get("video_model") or ""
+
+    if source == "own":
+        await _start_own_photo_upload(callback.message, state, settings)
+        return
+
+    # source == "auto" — identical to the previous handle_prompt_ok body
     if _is_reference_model(video_model):
         image_count = int(settings.get("image_count", 1))
         if image_count > 1:
@@ -618,6 +673,196 @@ async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
 
 
 # ─────────────────────────────────────────────
+# OWN PHOTO UPLOAD (alternative to auto-generation)
+# ─────────────────────────────────────────────
+
+async def _start_own_photo_upload(message: Message, state: FSMContext, settings: dict) -> None:
+    """Entry point for the '📷 Upload my own photo' choice.
+
+    Reference models collect up to `image_count` photos (all of them are
+    actually used — passed to every clip). Every other I2V model accepts a
+    single input image at the API level, so exactly one photo is collected
+    regardless of the image_count setting.
+    """
+    video_model = settings.get("video_model") or ""
+    is_ref = _is_reference_model(video_model)
+    target_count = int(settings.get("image_count", 1)) if is_ref else 1
+
+    await state.update_data(
+        photo_source="own",
+        own_photo_paths=[],
+        own_photo_descriptions=[],
+        own_photo_target_count=target_count,
+        own_photo_awaiting_description=False,
+    )
+    await message.answer(
+        _OWN_PHOTO_DISCLAIMER
+        + f"📷 Send photo 1 of {target_count} as a FILE (not a gallery photo — "
+        "Telegram compresses those and details get lost)."
+    )
+    await state.set_state(GenerationState.ENTER_OWN_PHOTOS)
+
+
+async def _finish_or_continue_own_photos(
+    message: Message, state: FSMContext, is_ref: bool
+) -> None:
+    """After a photo (and its description, if required) is accepted: ask for
+    the next one, or — once `target_count` is reached — finalize exactly like
+    the post-generation preview (CONFIRM_IMAGE)."""
+    data = await state.get_data()
+    paths: list[str] = list(data.get("own_photo_paths") or [])
+    descriptions: list[str] = list(data.get("own_photo_descriptions") or [])
+    target_count = int(data.get("own_photo_target_count", 1))
+
+    if len(paths) < target_count:
+        await message.answer(f"📷 Send photo {len(paths) + 1} of {target_count} as a FILE.")
+        return
+
+    await state.update_data(
+        image_paths=paths,
+        image_prompt="",
+        photo_source="own",
+        ref_mode="manual" if is_ref else None,
+        ref_descriptions=descriptions if is_ref else None,
+    )
+    captions = [f"Photo {i + 1}/{len(paths)}" for i in range(len(paths))] if len(paths) > 1 else None
+    await _send_image_preview(message, paths, captions=captions)
+    await message.answer("Photo(s) received.\nContinue?", reply_markup=get_image_keyboard())
+    await state.set_state(GenerationState.CONFIRM_IMAGE)
+
+
+@router.message(GenerationState.ENTER_OWN_PHOTOS, F.photo | F.document, IsAllowed(allowed_users))
+async def handle_own_photo_upload(message: Message, state: FSMContext):
+    """Collect one uploaded photo: validate, download, normalize to 9:16."""
+    data = await state.get_data()
+    if data.get("own_photo_awaiting_description"):
+        await message.answer(
+            "📝 Describe the previous photo first (min. 15 chars) — then I'll ask for the next one."
+        )
+        return
+
+    if message.document:
+        mime = (message.document.mime_type or "").lower()
+        if not mime.startswith("image/"):
+            await message.answer("❌ This is not an image file. Send a JPEG/PNG/WebP image.")
+            return
+        media = message.document
+        ext = os.path.splitext(message.document.file_name or "")[1] or ".jpg"
+    else:
+        media = message.photo[-1]
+        ext = ".jpg"
+
+    file_size = getattr(media, "file_size", 0) or 0
+    if file_size > _TG_BOT_DOWNLOAD_LIMIT:
+        await message.answer(
+            f"❌ File is too big: {file_size / (1024 * 1024):.1f} MB.\n"
+            "Telegram allows bots to download at most 20 MB. Send a smaller photo."
+        )
+        return
+
+    imagegen = container.inject(ImageGenService)
+    raw_path = os.path.join(imagegen.static_dir, f"{uuid.uuid4()}_own{ext}")
+
+    status = await message.answer("⏳ Downloading your photo…")
+    try:
+        await message.bot.download(media, destination=raw_path)
+    except Exception as e:
+        logger.exception("Own photo download failed")
+        await status.edit_text(f"❌ Failed to download the photo: {e}\nSend it again.")
+        return
+
+    width, height = await asyncio.to_thread(_probe_image_size, raw_path)
+    if width < MIN_PHOTO_DIMENSION or height < MIN_PHOTO_DIMENSION:
+        try:
+            os.remove(raw_path)
+        except OSError:
+            pass
+        await status.edit_text(
+            f"❌ Photo is too small ({width}x{height}px) — send a higher-resolution photo."
+        )
+        return
+
+    try:
+        photo_path = await _normalize_to_vertical(raw_path, imagegen.static_dir)
+    except Exception as e:
+        logger.warning(f"Photo normalization failed, using original as-is: {e}")
+        photo_path = raw_path
+    else:
+        if photo_path != raw_path:
+            try:
+                os.remove(raw_path)
+            except OSError:
+                pass
+
+    db = container.inject(DBService)
+    settings = await db.get_settings(message.from_user.id, message.chat.id)
+    is_ref = _is_reference_model(settings.get("video_model") or "")
+
+    paths: list[str] = list(data.get("own_photo_paths") or [])
+    descriptions: list[str] = list(data.get("own_photo_descriptions") or [])
+    paths.append(photo_path)
+
+    caption = (message.caption or "").strip()
+    if is_ref and len(caption) < 15:
+        await state.update_data(
+            own_photo_paths=paths, own_photo_awaiting_description=True
+        )
+        await status.edit_text(f"✅ Photo {len(paths)} received.")
+        await message.answer(
+            f"📝 Describe photo {len(paths)} (min. 15 chars) — what's in it, so "
+            "the video script can reference it correctly."
+        )
+        return
+
+    if is_ref:
+        descriptions.append(caption)
+    await state.update_data(
+        own_photo_paths=paths, own_photo_descriptions=descriptions,
+        own_photo_awaiting_description=False,
+    )
+    await status.edit_text(f"✅ Photo {len(paths)} received.")
+    await _finish_or_continue_own_photos(message, state, is_ref)
+
+
+@router.message(GenerationState.ENTER_OWN_PHOTOS, _NOT_MENU_TEXT, IsAllowed(allowed_users))
+async def handle_own_photo_text(message: Message, state: FSMContext):
+    """Text on this state is either a pending photo description, or a
+    reminder to send a file if none is expected."""
+    text = (message.text or "").strip()
+
+    if text.lower() in ("/cancel", "cancel"):
+        await state.update_data(
+            own_photo_paths=[], own_photo_descriptions=[], own_photo_awaiting_description=False,
+        )
+        await message.answer(
+            "Cancelled. How should the photo be sourced?",
+            reply_markup=get_photo_source_keyboard(),
+        )
+        await state.set_state(GenerationState.SELECT_PHOTO_SOURCE)
+        return
+
+    data = await state.get_data()
+    if not data.get("own_photo_awaiting_description"):
+        await message.answer(
+            "Send the photo as a file (≤20 MB), or /cancel to change how the photo is sourced."
+        )
+        return
+
+    if len(text) < 15:
+        await message.answer("❌ Description too short — send at least 15 characters.")
+        return
+
+    descriptions: list[str] = list(data.get("own_photo_descriptions") or [])
+    descriptions.append(text)
+    await state.update_data(own_photo_descriptions=descriptions, own_photo_awaiting_description=False)
+
+    db = container.inject(DBService)
+    settings = await db.get_settings(message.from_user.id, message.chat.id)
+    is_ref = _is_reference_model(settings.get("video_model") or "")
+    await _finish_or_continue_own_photos(message, state, is_ref)
+
+
+# ─────────────────────────────────────────────
 # IMAGE STAGE
 # ─────────────────────────────────────────────
 
@@ -626,6 +871,14 @@ async def handle_image_prompt_change(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
     data = await state.get_data()
+
+    # Own-photo mode: "change prompt" doesn't apply — there's no text prompt
+    # for a photo the user supplied, so send them back to upload a different one.
+    if data.get("photo_source") == "own":
+        db = container.inject(DBService)
+        settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+        await _start_own_photo_upload(callback.message, state, settings)
+        return
 
     # For reference models with manual/auto mode, return to mode selection
     if data.get("ref_mode") in ("manual", "auto"):
@@ -661,6 +914,11 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
     ref_mode = data.get("ref_mode")
     db = container.inject(DBService)
     settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+
+    # Own-photo mode: "regenerate" means send a different photo, not call imagegen.
+    if data.get("photo_source") == "own":
+        await _start_own_photo_upload(callback.message, state, settings)
+        return
 
     # For reference models in manual/auto mode, redirect to re-enter mode selection
     if ref_mode in ("manual", "auto"):
@@ -991,10 +1249,18 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             video_model="", success=False, error_text=str(e)[:500],
         )
         err = str(e)
-        if "insufficient balance" in err.lower() or '"code":402' in err:
+        low = err.lower()
+        if "insufficient balance" in low or '"code":402' in err:
             err = (
                 "💳 Atlas Cloud balance is empty — top it up at atlascloud.ai "
                 "and tap Regenerate."
+            )
+        elif "restricted individuals" in low or "responsible ai" in low:
+            err = (
+                "🚫 Google's safety filter rejected this photo: it detected a "
+                "recognizable person it restricts (celebrities/public figures).\n"
+                "This is Google's policy, not a bot error — no charge is made.\n"
+                "Try a photo without recognizable public figures."
             )
         await callback.message.answer(f"Error: {err}\nTry again", reply_markup=get_video_keyboard())
     await state.set_state(GenerationState.CONFIRM_VIDEO)
