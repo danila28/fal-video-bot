@@ -201,21 +201,33 @@ async def settings_speed(callback: CallbackQuery):
     settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
     current = float(settings.get("video_speed", 1.0))
     await callback.message.answer(
-        f"⚡ Current speed: <b>{current:.2f}×</b>\n\n"
+        f"⚡ Current speed: <b>{current:g}×</b>\n\n"
         "• 1.0× — normal speed\n"
         "• 1.15× — slightly faster\n"
         "• 1.3× — fast\n"
-        "• 1.5× — turbo",
+        "• 1.5× — turbo\n"
+        "• ✏️ Custom — any value, e.g. 1.001× for a barely-there nudge "
+        "(platform dedup algorithms see a different file, playback looks identical)",
         parse_mode="HTML",
         reply_markup=get_speed_keyboard(current),
     )
 
 
 @router.callback_query(lambda c: c.data.startswith("settings:speed:"), IsAllowed(allowed_users))
-async def settings_speed_selected(callback: CallbackQuery):
+async def settings_speed_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    speed_str = callback.data.split(":")[-1]
+
+    if speed_str == "custom":
+        await callback.message.answer(
+            "Enter the speed multiplier (0.5-2.0):\n"
+            "Examples: 1.001 (imperceptible), 1.15, 0.98"
+        )
+        await state.set_state(GenerationState.SET_CUSTOM_SPEED)
+        return
+
     try:
-        speed = float(callback.data.split(":")[-1])
+        speed = float(speed_str)
         if speed not in (1.0, 1.15, 1.3, 1.5):
             await callback.message.answer("❌ Invalid speed value.")
             return
@@ -229,10 +241,35 @@ async def settings_speed_selected(callback: CallbackQuery):
             pass
         label = {1.0: "normal", 1.15: "slightly faster", 1.3: "fast", 1.5: "turbo"}.get(speed, "")
         await callback.message.answer(
-            f"✅ Speed set to <b>{speed:.2f}×</b> ({label}).", parse_mode="HTML"
+            f"✅ Speed set to <b>{speed:g}×</b> ({label}).", parse_mode="HTML"
         )
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
+
+
+@router.message(GenerationState.SET_CUSTOM_SPEED, IsAllowed(allowed_users))
+async def handle_custom_speed(message: Message, state: FSMContext):
+    # Invalid input keeps the state so the user can just send another number.
+    try:
+        speed = float((message.text or "").strip().replace(",", "."))
+    except ValueError:
+        await message.answer("❌ Please enter a valid number (0.5-2.0). Try again.")
+        return
+    if speed < 0.5 or speed > 2.0:
+        await message.answer("❌ Speed must be between 0.5-2.0. Try again.")
+        return
+    try:
+        db = container.inject(DBService)
+        await db.update_settings(
+            message.from_user.id, message.chat.id, {"video_speed": speed}
+        )
+        await message.answer(
+            f"✅ Speed set to <b>{speed:g}×</b>.", parse_mode="HTML",
+            reply_markup=get_speed_keyboard(speed),
+        )
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"❌ Error: {e}")
 
 
 @router.callback_query(lambda c: c.data == "settings:grade_params", IsAllowed(allowed_users))

@@ -795,7 +795,11 @@ class GeminiService:
             return video_path
 
     async def apply_speed(self, video_path: str, speed: float) -> str:
-        if abs(speed - 1.0) < 0.01:
+        # Only skip re-encoding for values that are 1.0 up to float noise —
+        # intentional micro-speeds (e.g. 1.001, used to nudge a video's hash
+        # for platform dedup algorithms without a perceptible playback change)
+        # must still go through ffmpeg.
+        if abs(speed - 1.0) < 1e-4:
             return video_path
         try:
             os.makedirs(self.static_dir, exist_ok=True)
@@ -805,7 +809,7 @@ class GeminiService:
 
             def _run():
                 in_v = ffmpeg.input(video_path)
-                vstream = in_v["v"].filter("setpts", f"{pts_factor:.4f}*PTS")
+                vstream = in_v["v"].filter("setpts", f"{pts_factor:.6f}*PTS")
                 if has_audio:
                     astream = in_v["a"]
                     remaining = speed

@@ -151,9 +151,12 @@ def get_speed_keyboard(current: float = 1.0):
     options = [1.0, 1.15, 1.3, 1.5]
     rows = []
     for s in options:
-        mark = "✅ " if abs(s - current) < 0.01 else ""
+        mark = "✅ " if abs(s - current) < 1e-4 else ""
         label = f"{mark}{s:.2f}×" if s != 1.0 else f"{mark}1.0× (normal)"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"settings:speed:{s}")])
+    is_custom = current not in options
+    custom_label = f"✅ ✏️ Custom: {current:g}×" if is_custom else "✏️ Custom speed"
+    rows.append([InlineKeyboardButton(text=custom_label, callback_data="settings:speed:custom")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -217,7 +220,7 @@ def get_advanced_settings_keyboard(
     grade_label = "🎨 Grade: ON"      if grade_on             else "🎨 Grade: OFF"
     sfx_label   = "🔊 SFX: ON"       if sfx_on               else "🔊 SFX: OFF"
     vo_label    = "🗣 Voiceover: ON" if voiceover_on         else "🗣 Voiceover: OFF"
-    spd_label   = f"⚡ {video_speed:.2f}×" if video_speed != 1.0 else "⚡ Speed: normal"
+    spd_label   = f"⚡ {video_speed:g}×" if video_speed != 1.0 else "⚡ Speed: normal"
     tz_sign     = "+" if utc_offset >= 0 else ""
     img_label   = f"🖼 {image_count} photo{'s' if image_count > 1 else ''}"
     return InlineKeyboardMarkup(
@@ -297,6 +300,28 @@ def get_photo_source_keyboard():
 
 
 # ── AI Editor ────────────────────────────────────────────────────────────────
+
+def get_editor_engine_keyboard():
+    """Explicit engine choice shown right after the source video is set —
+    no automatic fallback, the user always picks which model runs the edit."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🔵 Gemini Omni Flash — $0.14/s, blocks real people",
+                callback_data="editor:engine:omni",
+            )],
+            [InlineKeyboardButton(
+                text="🟠 Wan 2.7 — $0.10/s, more tolerant of people",
+                callback_data="editor:engine:wan",
+            )],
+            [InlineKeyboardButton(
+                text="🟢 Seedance 2.0 — ~$0.08/s (price unverified)",
+                callback_data="editor:engine:seedance",
+            )],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="editor:cancel")],
+        ]
+    )
+
 
 def get_editor_templates_keyboard():
     """Common-edit templates shown while waiting for the edit instruction."""

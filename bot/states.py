@@ -9,9 +9,10 @@ class EditingState(StatesGroup):
 
 
 class EditorState(StatesGroup):
-    """States for the AI Editor flow (Gemini Omni Flash video edit)."""
+    """States for the AI Editor flow (Gemini Omni Flash / Wan 2.7 video edit)."""
 
     WAITING_VIDEO = State()
+    SELECT_ENGINE = State()
     WAITING_INSTRUCTION = State()
     CONFIRM = State()
     RESULT = State()
@@ -30,6 +31,7 @@ class GenerationState(StatesGroup):
     SET_MUSIC_PATH = State()
     SET_UTC_OFFSET = State()
     SET_CUSTOM_DURATION = State()
+    SET_CUSTOM_SPEED = State()
 
     RAW_PROMPT = State()
     OWN_SCRIPT = State()

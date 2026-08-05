@@ -74,6 +74,31 @@ MODEL_LABELS: dict[str, str] = {
 
 _REFERENCE_MODELS = {_REF, _FAST_REF}
 
+# ── Video-Edit (via reference-to-video, passing the source as a video ref) ──
+# UNVERIFIED: reference_images/reference_videos/reference_audios field names,
+# AND the @Video1/@ImageN tagging convention used to bind them in the prompt,
+# come from Atlas Cloud docs/marketing found via search, not a direct fetch
+# of the live API reference — confirm against the first real request/error
+# before trusting this in production (Atlas's error text is usually specific
+# enough to correct a wrong field name, same as how the Kling multi_prompt
+# 512-char limit and the FpsTooHigh source-fps limit were discovered).
+MAX_EDIT_REFERENCE_IMAGES = 5
+_MAX_EDIT_DURATION = _MAX_CALL_DURATION  # 15s — one Atlas call limit
+
+# Price per second of SOURCE video — UNVERIFIED, conflicting figures seen
+# across sources ($0.081-0.247/s depending on tier). Using the Fast tier's
+# most-repeated figure as a placeholder; check the Atlas dashboard/first
+# invoice and correct before relying on the price shown to users.
+EDIT_PRICE_PER_SECOND = 0.08
+EDIT_BILL_MIN_SECONDS = 3
+EDIT_BILL_MAX_SECONDS = 15
+
+
+def estimate_edit_price(duration_seconds: float) -> float:
+    """Cost of one Seedance video-edit run — UNVERIFIED, see note above."""
+    billed = max(EDIT_BILL_MIN_SECONDS, min(EDIT_BILL_MAX_SECONDS, duration_seconds))
+    return billed * EDIT_PRICE_PER_SECOND
+
 
 class SeedanceService:
     def __init__(self, api_key: str, static_dir: str = ""):
@@ -164,6 +189,84 @@ class SeedanceService:
         )
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
+
+    async def edit_video(
+        self,
+        video_path: str,
+        prompt: str,
+        reference_image_paths: list[str] | None = None,
+        use_fast: bool = False,
+    ) -> str:
+        """Edit an existing video via Seedance's reference-to-video endpoint,
+        passing the source as a video reference. Returns local path to MP4.
+
+        Signature matches OmniEditService/WanEditService.edit_video so the
+        AI Editor can call any of the three engines interchangeably.
+        """
+        os.makedirs(self.static_dir, exist_ok=True)
+        duration = await asyncio.to_thread(self._probe_duration, video_path)
+        duration = max(4, min(_MAX_EDIT_DURATION, round(duration)))
+
+        # Atlas rejects sources outside 23.8-60 FPS (ret: InvalidParameter.FpsTooHigh) —
+        # slow-mo phone captures (120/240fps) are common enough to normalize upfront.
+        fps = await asyncio.to_thread(self._probe_fps, video_path)
+        upload_path = video_path
+        if fps < 23.8 or fps > 60:
+            logger.info(f"Seedance edit: source fps={fps:.1f} out of range — resampling to 30fps")
+            upload_path = await asyncio.to_thread(self._normalize_fps, video_path)
+
+        video_url = await self._atlas.upload_file(upload_path)
+        logger.info(f"Seedance: uploaded source video {upload_path} → {video_url}")
+
+        refs = (reference_image_paths or [])[:MAX_EDIT_REFERENCE_IMAGES]
+        image_urls = [await self._atlas.upload_file(p) for p in refs]
+
+        # Seedance's reference-to-video names each uploaded reference (@Video1
+        # for a video ref, @Image1.. for image refs) and expects the prompt to
+        # address them by tag — unlike Omni/Wan, which bind plain natural
+        # language ("insert the product from the reference photo") to the
+        # right reference on their own. Without the tag the model may not
+        # know the @Image1 product photo belongs *in* @Video1's scene.
+        tags = [] if "@Video1" in prompt else ["@Video1"]
+        tags += [
+            f"@Image{i + 1}" for i in range(len(image_urls))
+            if f"@Image{i + 1}" not in prompt
+        ]
+        tagged_prompt = f"{' '.join(tags)} {prompt}" if tags else prompt
+
+        model = _FAST_REF if use_fast else _REF
+        params: dict = {
+            "prompt": tagged_prompt,
+            "reference_videos": [video_url],
+            "duration": duration,
+            "resolution": "720p",
+            "generate_audio": False,
+            "watermark": False,
+        }
+        if image_urls:
+            params["reference_images"] = image_urls
+
+        logger.info(
+            f"Seedance edit | model={model} | prompt={tagged_prompt[:80]!r}"
+            f" | refs={len(image_urls)} | duration={duration}s"
+        )
+        result_url = await self._atlas.generate_video(model, params)
+        result_path = await self._atlas.download(result_url, ext="mp4")
+
+        # reference-to-video doesn't pass the source audio track through, and
+        # generate_audio=False means Atlas returns the edit silent — remux the
+        # original audio back on rather than let Seedance synthesize new ambient
+        # sound (which would replace, not preserve, the source's real audio).
+        has_audio = await asyncio.to_thread(self._has_audio_stream, video_path)
+        if has_audio:
+            try:
+                result_path = await asyncio.to_thread(
+                    self._mux_original_audio, video_path, result_path
+                )
+            except Exception as e:
+                logger.warning(f"Seedance edit: audio remux failed, returning silent result: {e}")
+
+        return result_path
 
     async def generate_multi_scene_clip(
         self,
@@ -343,3 +446,67 @@ class SeedanceService:
         except Exception as e:
             logger.warning(f"ffprobe failed: {e}")
         return 10.0
+
+    @staticmethod
+    def _probe_fps(video_path: str) -> float:
+        try:
+            import ffmpeg
+            info = ffmpeg.probe(video_path)
+            for stream in info.get("streams", []):
+                if stream.get("codec_type") != "video":
+                    continue
+                rate = stream.get("avg_frame_rate") or stream.get("r_frame_rate") or ""
+                if "/" in rate:
+                    num, den = rate.split("/")
+                    if float(den):
+                        return float(num) / float(den)
+                elif rate:
+                    return float(rate)
+        except Exception as e:
+            logger.warning(f"fps probe failed: {e}")
+        return 30.0
+
+    @staticmethod
+    def _has_audio_stream(video_path: str) -> bool:
+        try:
+            import ffmpeg
+            info = ffmpeg.probe(video_path)
+            return any(s.get("codec_type") == "audio" for s in info.get("streams", []))
+        except Exception as e:
+            logger.warning(f"audio-stream probe failed: {e}")
+            return False
+
+    @staticmethod
+    def _mux_original_audio(source_path: str, edited_path: str) -> str:
+        """Remux the source video's original audio onto the edited output.
+        `shortest` trims to the shorter of the two streams — safe here since
+        the edited clip's duration is always <= the source's."""
+        import ffmpeg
+        base, ext = os.path.splitext(edited_path)
+        out_path = f"{base}_audio{ext}"
+        video_in = ffmpeg.input(edited_path)
+        audio_in = ffmpeg.input(source_path)
+        (
+            ffmpeg.output(
+                video_in.video, audio_in.audio, out_path,
+                vcodec="copy", acodec="aac", shortest=None,
+            )
+            .overwrite_output()
+            .run(quiet=True)
+        )
+        return out_path
+
+    @staticmethod
+    def _normalize_fps(video_path: str, target_fps: int = 30) -> str:
+        """Re-encode to target_fps. Atlas's Seedance edit rejects anything
+        outside 23.8-60 FPS (e.g. 120/240fps slow-mo phone captures)."""
+        import ffmpeg
+        base, ext = os.path.splitext(video_path)
+        out_path = f"{base}_fps{target_fps}{ext}"
+        (
+            ffmpeg.input(video_path)
+            .output(out_path, r=target_fps, vcodec="libx264", acodec="copy")
+            .overwrite_output()
+            .run(quiet=True)
+        )
+        return out_path
