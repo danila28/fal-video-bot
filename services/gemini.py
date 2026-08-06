@@ -93,16 +93,28 @@ class GeminiService:
 
     # ── Text generation ────────────────────────────────────────────────────
 
+    _IMAGE_MIME_BY_EXT = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".webp": "image/webp",
+    }
+
     @_retry_cheap
     async def generate_text(
-        self, prompt: str, system_prompt: str = "", model: str = "gemini-3.1-flash-lite"
+        self, prompt: str, system_prompt: str = "", model: str = "gemini-3.1-flash-lite",
+        image_paths: list[str] | None = None,
     ) -> str:
         # Callers pass settings.get("text_model") or "" — treat empty as default
         # so the bot works out of the box without any configuration.
         model = model or "gemini-3.1-flash-lite"
         try:
+            parts = []
+            for p in (image_paths or []):
+                mime = self._IMAGE_MIME_BY_EXT.get(os.path.splitext(p)[1].lower(), "image/jpeg")
+                with open(p, "rb") as f:
+                    parts.append(types.Part.from_bytes(data=f.read(), mime_type=mime))
+            parts.append(types.Part(text=prompt))
             contents = [
-                types.Content(role="user", parts=[types.Part(text=prompt)]),
+                types.Content(role="user", parts=parts),
             ]
             config = types.GenerateContentConfig(system_instruction=system_prompt)
             response = await asyncio.to_thread(

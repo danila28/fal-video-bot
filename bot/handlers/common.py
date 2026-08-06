@@ -963,6 +963,7 @@ async def _build_video_prompt(
     ref_roles: list[dict] | None = None,
     ref_combination_plan: str = "",
     ref_descriptions: list[str] | None = None,
+    own_photo_paths: list[str] | None = None,
 ) -> str:
     """Generate video script as structured JSON. Falls back to text format on parse failure.
 
@@ -972,6 +973,10 @@ async def _build_video_prompt(
     ref_roles: list of {"index": N, "role": "...", "description": "..."} for auto mode
     ref_combination_plan: how to combine reference images (auto mode)
     ref_descriptions: user-provided descriptions for manual mode
+    own_photo_paths: user-uploaded real photo(s) — passed to Gemini as actual
+    image input (vision) instead of a text description, so shots are grounded
+    in what the photo(s) actually show rather than invented from enhance_prompt
+    alone. Takes priority over ref_roles/ref_descriptions when set.
     """
     base_sys = (
         _STRICT_SCRIPT_SYS if strict_script
@@ -1005,7 +1010,34 @@ async def _build_video_prompt(
 
     # Build reference image context if provided
     ref_images_context = ""
-    if ref_roles and ref_combination_plan:
+    if own_photo_paths:
+        # The user's own real photo(s) — attached directly as image input below
+        # (see gemini.generate_text call), not described in text. The model
+        # looks at them itself instead of relying on a human-typed description.
+        is_ref_model = video_model.endswith("_ref")
+        if is_ref_model and len(own_photo_paths) > 1:
+            from utils.presets import get_image_tag_template
+            tag_template = get_image_tag_template(video_model)
+            tags = ", ".join(tag_template.format(i=i + 1) for i in range(len(own_photo_paths)))
+            ref_images_context = (
+                "\n\nATTACHED PHOTOS: the images attached to this request are the "
+                f"user's own real photos, in order, corresponding to tags {tags}.\n"
+                "Look at them directly. When writing scene_prompt for EACH shot, "
+                "MUST include image tag(s) for the attached photo(s) that appear in "
+                "that shot, and describe action/setting around exactly what is "
+                "visible in the photo(s) — do NOT invent a different subject."
+            )
+            scene_prompt_rule = "scene_prompt: MUST include image tag(s) for the attached photo(s) actually shown in this shot. Then describe subject action + setting + lighting based on what's visible in the photo(s) — do NOT invent a different person/subject (English ONLY, visuals ONLY). Max 55 words per shot"
+        else:
+            ref_images_context = (
+                "\n\nATTACHED PHOTO: the image attached to this request is the "
+                "user's own real photo — it is the video's starting frame. Look at "
+                "it directly. Every shot must be visually continuous with exactly "
+                "what is shown in it (same subject, same general setting/outfit "
+                "unless the story explicitly changes it) — do NOT invent a "
+                "different person or scene."
+            )
+    elif ref_roles and ref_combination_plan:
         # Auto mode: LLM-generated roles + plan
         from utils.presets import get_image_tag_template
         tag_template = get_image_tag_template(video_model)
@@ -1058,7 +1090,7 @@ async def _build_video_prompt(
         "- caption: same language as spoken_text\n"
         f"- transition: {transition_rule}\n"
         "- scene_prompt must depict EXACTLY the topic from the input\n"
-        + ("- WITH REFERENCE IMAGES: EVERY scene_prompt MUST start with image tag(s) (e.g. '@Image1', '<<<element_1>>>') showing which reference image(s) appear in that shot — do NOT omit these tags\n" if (ref_roles or ref_descriptions) else "")
+        + ("- WITH REFERENCE IMAGES: EVERY scene_prompt MUST start with image tag(s) (e.g. '@Image1', '<<<element_1>>>') showing which reference image(s) appear in that shot — do NOT omit these tags\n" if (ref_roles or ref_descriptions or (own_photo_paths and video_model.endswith("_ref") and len(own_photo_paths) > 1)) else "")
         + "- G-rated, child-safe content only\n"
         f"- Total: {n_clips} shot(s), EXACTLY {actual_duration}s\n"
     )
@@ -1068,17 +1100,21 @@ async def _build_video_prompt(
         enhance_prompt,
         sys_prompt,
         settings.get("text_model") or "",
+        image_paths=own_photo_paths,
     )
 
     if GeminiService.parse_script_json(raw) is not None:
         return raw  # valid JSON ✓
 
     logger.warning("Gemini returned invalid JSON for video script — falling back to text format")
-    return await _build_video_prompt_text(enhance_prompt, settings, gemini, strict_script=strict_script)
+    return await _build_video_prompt_text(
+        enhance_prompt, settings, gemini, strict_script=strict_script, own_photo_paths=own_photo_paths
+    )
 
 
 async def _build_video_prompt_text(
-    enhance_prompt: str, settings: dict, gemini: GeminiService, strict_script: bool = False
+    enhance_prompt: str, settings: dict, gemini: GeminiService, strict_script: bool = False,
+    own_photo_paths: list[str] | None = None,
 ) -> str:
     """Text-format fallback (original implementation)."""
     base_sys = (
@@ -1132,11 +1168,20 @@ async def _build_video_prompt_text(
         f"- G-rated, child-safe content only"
     )
 
-    sys_with_hint = (base_sys + _FORMAT_SUFFIX) if base_sys else _FORMAT_SUFFIX
+    photo_hint = (
+        "\n\nATTACHED PHOTO: the image attached to this request is the user's own "
+        "real photo — it is the video's starting frame. Look at it directly. The "
+        "Scene shots must be visually continuous with exactly what is shown in it "
+        "(same subject, same general setting/outfit unless the story explicitly "
+        "changes it) — do NOT invent a different person or scene."
+        if own_photo_paths else ""
+    )
+    sys_with_hint = (base_sys + photo_hint + _FORMAT_SUFFIX) if base_sys else (photo_hint + _FORMAT_SUFFIX)
     return await gemini.generate_text(
         enhance_prompt,
         sys_with_hint,
         settings.get("text_model") or "",
+        image_paths=own_photo_paths,
     )
 
 

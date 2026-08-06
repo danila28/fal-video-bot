@@ -682,7 +682,10 @@ async def _start_own_photo_upload(message: Message, state: FSMContext, settings:
     Reference models collect up to `image_count` photos (all of them are
     actually used — passed to every clip). Every other I2V model accepts a
     single input image at the API level, so exactly one photo is collected
-    regardless of the image_count setting.
+    regardless of the image_count setting. No description is asked for — the
+    photo(s) are handed to Gemini as actual image input when the video
+    script is written (see _build_video_prompt's own_photo_paths), so the
+    model looks at them directly instead of relying on a human-typed blurb.
     """
     video_model = settings.get("video_model") or ""
     is_ref = _is_reference_model(video_model)
@@ -691,9 +694,7 @@ async def _start_own_photo_upload(message: Message, state: FSMContext, settings:
     await state.update_data(
         photo_source="own",
         own_photo_paths=[],
-        own_photo_descriptions=[],
         own_photo_target_count=target_count,
-        own_photo_awaiting_description=False,
     )
     await message.answer(
         _OWN_PHOTO_DISCLAIMER
@@ -703,15 +704,12 @@ async def _start_own_photo_upload(message: Message, state: FSMContext, settings:
     await state.set_state(GenerationState.ENTER_OWN_PHOTOS)
 
 
-async def _finish_or_continue_own_photos(
-    message: Message, state: FSMContext, is_ref: bool
-) -> None:
-    """After a photo (and its description, if required) is accepted: ask for
-    the next one, or — once `target_count` is reached — finalize exactly like
-    the post-generation preview (CONFIRM_IMAGE)."""
+async def _finish_or_continue_own_photos(message: Message, state: FSMContext) -> None:
+    """After a photo is accepted: ask for the next one, or — once
+    `target_count` is reached — finalize exactly like the post-generation
+    preview (CONFIRM_IMAGE)."""
     data = await state.get_data()
     paths: list[str] = list(data.get("own_photo_paths") or [])
-    descriptions: list[str] = list(data.get("own_photo_descriptions") or [])
     target_count = int(data.get("own_photo_target_count", 1))
 
     if len(paths) < target_count:
@@ -722,8 +720,6 @@ async def _finish_or_continue_own_photos(
         image_paths=paths,
         image_prompt="",
         photo_source="own",
-        ref_mode="manual" if is_ref else None,
-        ref_descriptions=descriptions if is_ref else None,
     )
     captions = [f"Photo {i + 1}/{len(paths)}" for i in range(len(paths))] if len(paths) > 1 else None
     await _send_image_preview(message, paths, captions=captions)
@@ -734,13 +730,6 @@ async def _finish_or_continue_own_photos(
 @router.message(GenerationState.ENTER_OWN_PHOTOS, F.photo | F.document, IsAllowed(allowed_users))
 async def handle_own_photo_upload(message: Message, state: FSMContext):
     """Collect one uploaded photo: validate, download, normalize to 9:16."""
-    data = await state.get_data()
-    if data.get("own_photo_awaiting_description"):
-        await message.answer(
-            "📝 Describe the previous photo first (min. 15 chars) — then I'll ask for the next one."
-        )
-        return
-
     if message.document:
         mime = (message.document.mime_type or "").lower()
         if not mime.startswith("image/"):
@@ -794,46 +783,22 @@ async def handle_own_photo_upload(message: Message, state: FSMContext):
             except OSError:
                 pass
 
-    db = container.inject(DBService)
-    settings = await db.get_settings(message.from_user.id, message.chat.id)
-    is_ref = _is_reference_model(settings.get("video_model") or "")
-
+    data = await state.get_data()
     paths: list[str] = list(data.get("own_photo_paths") or [])
-    descriptions: list[str] = list(data.get("own_photo_descriptions") or [])
     paths.append(photo_path)
-
-    caption = (message.caption or "").strip()
-    if is_ref and len(caption) < 15:
-        await state.update_data(
-            own_photo_paths=paths, own_photo_awaiting_description=True
-        )
-        await status.edit_text(f"✅ Photo {len(paths)} received.")
-        await message.answer(
-            f"📝 Describe photo {len(paths)} (min. 15 chars) — what's in it, so "
-            "the video script can reference it correctly."
-        )
-        return
-
-    if is_ref:
-        descriptions.append(caption)
-    await state.update_data(
-        own_photo_paths=paths, own_photo_descriptions=descriptions,
-        own_photo_awaiting_description=False,
-    )
+    await state.update_data(own_photo_paths=paths)
     await status.edit_text(f"✅ Photo {len(paths)} received.")
-    await _finish_or_continue_own_photos(message, state, is_ref)
+    await _finish_or_continue_own_photos(message, state)
 
 
 @router.message(GenerationState.ENTER_OWN_PHOTOS, _NOT_MENU_TEXT, IsAllowed(allowed_users))
 async def handle_own_photo_text(message: Message, state: FSMContext):
-    """Text on this state is either a pending photo description, or a
-    reminder to send a file if none is expected."""
+    """Text on this state either cancels back to source selection, or is a
+    reminder to send a file."""
     text = (message.text or "").strip()
 
     if text.lower() in ("/cancel", "cancel"):
-        await state.update_data(
-            own_photo_paths=[], own_photo_descriptions=[], own_photo_awaiting_description=False,
-        )
+        await state.update_data(own_photo_paths=[])
         await message.answer(
             "Cancelled. How should the photo be sourced?",
             reply_markup=get_photo_source_keyboard(),
@@ -841,25 +806,9 @@ async def handle_own_photo_text(message: Message, state: FSMContext):
         await state.set_state(GenerationState.SELECT_PHOTO_SOURCE)
         return
 
-    data = await state.get_data()
-    if not data.get("own_photo_awaiting_description"):
-        await message.answer(
-            "Send the photo as a file (≤20 MB), or /cancel to change how the photo is sourced."
-        )
-        return
-
-    if len(text) < 15:
-        await message.answer("❌ Description too short — send at least 15 characters.")
-        return
-
-    descriptions: list[str] = list(data.get("own_photo_descriptions") or [])
-    descriptions.append(text)
-    await state.update_data(own_photo_descriptions=descriptions, own_photo_awaiting_description=False)
-
-    db = container.inject(DBService)
-    settings = await db.get_settings(message.from_user.id, message.chat.id)
-    is_ref = _is_reference_model(settings.get("video_model") or "")
-    await _finish_or_continue_own_photos(message, state, is_ref)
+    await message.answer(
+        "Send the photo as a file (≤20 MB), or /cancel to change how the photo is sourced."
+    )
 
 
 # ─────────────────────────────────────────────
@@ -980,11 +929,15 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
         ref_roles = data.get("ref_roles") if data.get("ref_mode") == "auto" else None
         ref_plan = data.get("ref_combination_plan", "") if data.get("ref_mode") == "auto" else ""
         ref_descriptions = data.get("ref_descriptions") if data.get("ref_mode") == "manual" else None
+        own_photo_paths = data.get("image_paths") if data.get("photo_source") == "own" else None
 
         await callback.message.answer("⏳ Generating video prompt…")
         text_model = settings.get("text_model") or ""
         video_prompt, hashtags = await asyncio.gather(
-            _build_video_prompt(enhance_prompt, settings, gemini, ref_roles=ref_roles, ref_combination_plan=ref_plan, ref_descriptions=ref_descriptions),
+            _build_video_prompt(
+                enhance_prompt, settings, gemini, ref_roles=ref_roles, ref_combination_plan=ref_plan,
+                ref_descriptions=ref_descriptions, own_photo_paths=own_photo_paths,
+            ),
             gemini.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
         )
 
@@ -1053,10 +1006,12 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
         ref_roles = data.get("ref_roles") if data.get("ref_mode") == "auto" else None
         ref_plan = data.get("ref_combination_plan", "") if data.get("ref_mode") == "auto" else ""
         ref_descriptions = data.get("ref_descriptions") if data.get("ref_mode") == "manual" else None
+        own_photo_paths = data.get("image_paths") if data.get("photo_source") == "own" else None
         video_prompt = await _build_video_prompt(
             data.get("enhance_prompt", ""), settings, gemini,
             strict_script=bool(data.get("own_script")),
             ref_roles=ref_roles, ref_combination_plan=ref_plan, ref_descriptions=ref_descriptions,
+            own_photo_paths=own_photo_paths,
         )
         new_scene, _ = _split_video_prompt(video_prompt, gemini)
         voiceover = data.get("video_voiceover", "")
@@ -1084,10 +1039,12 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
         ref_roles = data.get("ref_roles") if data.get("ref_mode") == "auto" else None
         ref_plan = data.get("ref_combination_plan", "") if data.get("ref_mode") == "auto" else ""
         ref_descriptions = data.get("ref_descriptions") if data.get("ref_mode") == "manual" else None
+        own_photo_paths = data.get("image_paths") if data.get("photo_source") == "own" else None
         video_prompt = await _build_video_prompt(
             data.get("enhance_prompt", ""), settings, gemini,
             strict_script=bool(data.get("own_script")),
             ref_roles=ref_roles, ref_combination_plan=ref_plan, ref_descriptions=ref_descriptions,
+            own_photo_paths=own_photo_paths,
         )
         _, new_voiceover = _split_video_prompt(video_prompt, gemini)
         scene = data.get("video_scene", "")
