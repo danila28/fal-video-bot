@@ -166,8 +166,12 @@ async def settings_resolution(callback: CallbackQuery):
     current = settings.get("video_resolution", "720p")
     await callback.message.answer(
         f"📐 Current resolution: <b>{current}</b>\n\n"
+        "• <b>480p</b> — Seedance only, cheapest/lowest quality\n"
         "• <b>720p</b> — default, fastest, supported by all models\n"
-        "• <b>1080p</b> — Seedance only (lip-sync models output is fixed)\n",
+        "• <b>1080p</b> — Seedance only\n\n"
+        "⚠️ Kling models ignore this setting entirely — Kling v3.x always "
+        "renders at its own fixed 1080P (no 720p/480p option exists on that "
+        "API), and Kling O3 has no resolution control at all.",
         parse_mode="HTML",
         reply_markup=get_resolution_keyboard(current),
     )
@@ -178,7 +182,7 @@ async def settings_resolution_selected(callback: CallbackQuery):
     await callback.answer()
     try:
         res_val = callback.data.split(":")[-1]
-        if res_val not in ("720p", "1080p"):
+        if res_val not in ("480p", "720p", "1080p"):
             await callback.message.answer("❌ Invalid resolution.")
             return
         db = container.inject(DBService)

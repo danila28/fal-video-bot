@@ -44,9 +44,11 @@ _MAX_CALL_DURATION = 15
 
 
 def _normalize_resolution(model_id: str, resolution: str) -> str:
-    """Mini models don't accept plain '1080p' — only the '-SR' (super-resolution)
-    variant. Other tiers accept 720p/1080p as-is."""
-    if "mini" in model_id and resolution == "1080p":
+    """Fast and Mini tiers don't accept plain '1080p' — only the '-SR'
+    (super-resolution) variant (verified against Atlas Cloud's parameter
+    tables for all Seedance 2.0 model pages). Only the full/base tier
+    accepts plain '1080p'. 480p is valid as-is on every tier."""
+    if ("mini" in model_id or "fast" in model_id) and resolution == "1080p":
         return "1080p-SR"
     return resolution
 
@@ -185,7 +187,7 @@ class SeedanceService:
 
         logger.info(
             f"Seedance generating clip | model={model} | {duration}s"
-            f" | images={len(effective_urls)}"
+            f" | images={len(effective_urls)} | resolution={params.get('resolution', 'n/a')}"
         )
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")
@@ -319,7 +321,7 @@ class SeedanceService:
 
         logger.info(
             f"Seedance multi-scene | model={atlas_model} | scenes={len(scene_prompts)}"
-            f" | total_duration={total_duration}s"
+            f" | total_duration={total_duration}s | resolution={resolution}"
         )
         video_url = await self._atlas.generate_video(atlas_model, params)
         return await self._atlas.download(video_url, ext="mp4")

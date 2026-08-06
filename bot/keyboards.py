@@ -135,6 +135,7 @@ def get_publish_keyboard():
 
 def get_resolution_keyboard(current: str = "720p"):
     options = [
+        ("480p",  "480p — Seedance only, cheapest/lowest quality"),
         ("720p",  "720p — default, fastest"),
         ("1080p", "1080p — Seedance only, slower"),
     ]
