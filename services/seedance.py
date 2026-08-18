@@ -8,6 +8,9 @@ Supported models (set via settings video_model):
   seedance_mini_t2v → Seedance 2.0 Mini  Text-to-Video
   seedance_ref      → Seedance 2.0       Reference-to-Video
   seedance_fast_ref → Seedance 2.0 Fast  Reference-to-Video
+  seedance_25       → Seedance 2.5       Image-to-Video
+  seedance_25_t2v   → Seedance 2.5       Text-to-Video
+  seedance_25_ref   → Seedance 2.5       Reference-to-Video
 
 Reference-to-Video uses `image_urls` (array) with `@Image1..N` tags in the
 prompt; every clip receives ALL reference images and last-frame stitching is
@@ -35,6 +38,10 @@ _MINI_T2V  = "bytedance/seedance-2.0-mini/text-to-video"
 _REF       = "bytedance/seedance-2.0/reference-to-video"
 _FAST_REF  = "bytedance/seedance-2.0-fast/reference-to-video"
 
+_I2V_25    = "bytedance/seedance-2.5/image-to-video"
+_T2V_25    = "bytedance/seedance-2.5/text-to-video"
+_REF_25    = "bytedance/seedance-2.5/reference-to-video"
+
 # Backwards-compat aliases
 _MODEL_IMAGE_TO_VIDEO = _I2V
 _MODEL_TEXT_TO_VIDEO  = _T2V
@@ -47,7 +54,12 @@ def _normalize_resolution(model_id: str, resolution: str) -> str:
     """Fast and Mini tiers don't accept plain '1080p' — only the '-SR'
     (super-resolution) variant (verified against Atlas Cloud's parameter
     tables for all Seedance 2.0 model pages). Only the full/base tier
-    accepts plain '1080p'. 480p is valid as-is on every tier."""
+    accepts plain '1080p'. 480p is valid as-is on every tier.
+
+    Seedance 2.5 has no "mini"/"fast" tier, so it falls through unchanged —
+    same as the 2.0 base tier. UNVERIFIED against Atlas's 2.5 parameter
+    tables; correct here if a real request comes back with a resolution
+    error."""
     if ("mini" in model_id or "fast" in model_id) and resolution == "1080p":
         return "1080p-SR"
     return resolution
@@ -61,6 +73,9 @@ MODEL_IDS: dict[str, str] = {
     "seedance_mini_t2v":  _MINI_T2V,
     "seedance_ref":       _REF,
     "seedance_fast_ref":  _FAST_REF,
+    "seedance_25":        _I2V_25,
+    "seedance_25_t2v":    _T2V_25,
+    "seedance_25_ref":    _REF_25,
 }
 
 # Human-readable labels used in notify messages
@@ -72,9 +87,12 @@ MODEL_LABELS: dict[str, str] = {
     "seedance_mini_t2v":  "Seedance 2.0 Mini T2V",
     "seedance_ref":       "Seedance 2.0 Reference",
     "seedance_fast_ref":  "Seedance 2.0 Fast Reference",
+    "seedance_25":        "Seedance 2.5",
+    "seedance_25_t2v":    "Seedance 2.5 T2V",
+    "seedance_25_ref":    "Seedance 2.5 Reference",
 }
 
-_REFERENCE_MODELS = {_REF, _FAST_REF}
+_REFERENCE_MODELS = {_REF, _FAST_REF, _REF_25}
 
 # ── Video-Edit (via reference-to-video, passing the source as a video ref) ──
 # UNVERIFIED: reference_images/reference_videos/reference_audios field names,

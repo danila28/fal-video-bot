@@ -24,7 +24,7 @@ _SFX_SCENE_CHARS = 200
 logger = logging.getLogger(__name__)
 
 # Models that generate video from text only — no reference image needed or used.
-_T2V_VIDEO_MODELS = {"seedance_t2v", "seedance_mini_t2v", "kling_t2v", "kling_turbo_t2v"}
+_T2V_VIDEO_MODELS = {"seedance_t2v", "seedance_mini_t2v", "seedance_25_t2v", "kling_t2v", "kling_turbo_t2v"}
 
 
 # ── Duration config ──────────────────────────────────────────────────────────
