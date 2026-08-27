@@ -9,12 +9,17 @@ Modeled directly on SeedanceService: same Atlas submit/poll/download
 pattern via AtlasClient, same @Image1..N reference-tagging convention,
 single tier (no fast/mini variants exist for h3). Atlas lists
 "minimax/h3/{task}" under the identical provider/model/task URL shape as
-"bytedance/seedance-2.0/{task}", but the request param field names below
-(image_url/image_urls/ratio/resolution/generate_audio/watermark) are
-UNVERIFIED for this specific model — carried over from Seedance as the
-closest known-working shape. Confirm against the first real request/error
-and correct here, same as Seedance's own reference-to-video edit fields
-were confirmed.
+"bytedance/seedance-2.0/{task}". Param field names carried over from
+Seedance (image_url/image_urls/ratio/duration/generate_audio/watermark)
+are STILL UNVERIFIED beyond `resolution` — that one field name is
+confirmed correct because Atlas's first live 400 evaluated its value
+against an enum instead of rejecting the field as unknown.
+
+Resolution is CONFIRMED (from that same live error) to use its own
+vocabulary, not Seedance/Kling's "480p/720p/1080p":
+    supported: 480P, 768P, 2K
+The bot's shared video_resolution setting only offers 480p/720p/1080p —
+_normalize_resolution() maps those to the nearest MiniMax tier.
 
 Clip duration: assumed up to 15s per Atlas call, same as every other Atlas
 video model seen so far — UNVERIFIED, adjust _MAX_CALL_DURATION if Atlas
@@ -39,6 +44,21 @@ _REF = "minimax/h3/reference-to-video"
 # Atlas hard limit (assumed, see module docstring): one request renders at
 # most 15 seconds.
 _MAX_CALL_DURATION = 15
+
+# MiniMax H3's own resolution tiers (confirmed via live Atlas 400 error) —
+# unrelated to Seedance/Kling's 480p/720p/1080p vocabulary. The bot's shared
+# settings UI only offers the latter, so map to the nearest MiniMax tier:
+# 720p has no exact match, 768P is the closest higher tier; 1080p maps up to
+# the ceiling tier 2K (no 1080p-equivalent option exists).
+_RESOLUTION_MAP: dict[str, str] = {
+    "480p":  "480P",
+    "720p":  "768P",
+    "1080p": "2K",
+}
+
+
+def _normalize_resolution(resolution: str) -> str:
+    return _RESOLUTION_MAP.get((resolution or "").lower(), resolution)
 
 # Map from settings model name → Atlas model ID
 MODEL_IDS: dict[str, str] = {
@@ -85,6 +105,7 @@ class MiniMaxService:
         """
         os.makedirs(self.static_dir, exist_ok=True)
         duration = max(4, min(_MAX_CALL_DURATION, duration))
+        resolution = _normalize_resolution(resolution)
         is_reference = model_id in _REFERENCE_MODELS
 
         # image_urls takes priority over image_url
@@ -157,6 +178,7 @@ class MiniMaxService:
         pass it to hit an exact target duration instead of a per-scene multiple.
         """
         os.makedirs(self.static_dir, exist_ok=True)
+        resolution = _normalize_resolution(resolution)
 
         combined_prompt = " ".join(
             f"[Scene{i + 1}] {p}" for i, p in enumerate(scene_prompts)
