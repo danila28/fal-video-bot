@@ -14,6 +14,7 @@ from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
+from services.minimax import MiniMaxService
 from services.seedance import SeedanceService
 from utils import container
 from utils.config import config
@@ -24,7 +25,11 @@ _SFX_SCENE_CHARS = 200
 logger = logging.getLogger(__name__)
 
 # Models that generate video from text only — no reference image needed or used.
-_T2V_VIDEO_MODELS = {"seedance_t2v", "seedance_mini_t2v", "seedance_25_t2v", "kling_t2v", "kling_turbo_t2v"}
+_T2V_VIDEO_MODELS = {
+    "seedance_t2v", "seedance_mini_t2v", "seedance_25_t2v",
+    "kling_t2v", "kling_turbo_t2v",
+    "minimax_h3_t2v",
+}
 
 
 # ── Duration config ──────────────────────────────────────────────────────────
@@ -233,10 +238,17 @@ async def generate_video_for_model(
         target = settings.get("target_duration", DEFAULT_TARGET_DURATION)
         shots = _normalize_shot_durations(shots, target, min_dur, max_dur)
 
-    # Prefix routing: any kling_* goes to Kling (unknown/removed variants fall
-    # back to Kling v3 Pro inside), everything else — to Seedance (default).
+    # Prefix routing: any kling_* goes to Kling, any minimax_* goes to MiniMax
+    # (unknown/removed variants fall back to the tier default inside each
+    # function), everything else — to Seedance (default).
     if model.startswith("kling"):
         return await _generate_kling(
+            gemini=gemini, settings=settings,
+            video_prompt=video_prompt, voiceover_text=voiceover_text,
+            image_paths=image_paths, notify=notify, shots=shots,
+        )
+    if model.startswith("minimax"):
+        return await _generate_minimax(
             gemini=gemini, settings=settings,
             video_prompt=video_prompt, voiceover_text=voiceover_text,
             image_paths=image_paths, notify=notify, shots=shots,
@@ -414,6 +426,195 @@ async def _generate_seedance(
                 if frame_path:
                     try:
                         new_url = await seedance.upload_photo(frame_path)
+                        if new_url:
+                            anchor_image_url = new_url
+                    finally:
+                        try:
+                            os.remove(frame_path)
+                        except OSError:
+                            pass
+        concat_transitions = transitions[:-1] if transitions else None
+        raw_video = await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions) if len(clips) > 1 else clips[0]
+
+    await notify(f"✅ {label} clips ready")
+
+    tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
+
+    return {
+        "raw_video_path": raw_video,
+        "tts_audio_path": tts_audio_path,
+        "word_timings": word_timings,
+        "voiceover_text": voiceover_text,
+        "has_native_audio": keep_native,
+    }
+
+
+async def _generate_minimax(
+    *,
+    gemini: GeminiService,
+    settings: dict,
+    video_prompt: str,
+    voiceover_text: str,
+    image_paths: list[str] | None,
+    notify,
+    shots: list[dict] | None = None,
+) -> dict:
+    """Mirrors _generate_seedance — MiniMax H3 uses the same request shape
+    (single tier, 4-15s clips, @ImageN reference tags). See services/minimax.py
+    for what's verified vs. assumed."""
+    from services.minimax import MODEL_IDS as _MINIMAX_IDS, MODEL_LABELS as _MINIMAX_LABELS
+    model = (settings.get("video_model") or "minimax_h3").lower()
+    atlas_model_id = _MINIMAX_IDS.get(model, _MINIMAX_IDS["minimax_h3"])
+    label = _MINIMAX_LABELS.get(model, "MiniMax H3")
+    resolution = settings.get("video_resolution", "720p")
+
+    minimax = container.inject(MiniMaxService)
+    valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
+
+    # ── MiniMax I2V / T2V ────────────────────────────────────────────────────
+    target_duration = settings.get("target_duration", DEFAULT_TARGET_DURATION)
+    clip_dur = _clip_duration_for_model(model)
+
+    if shots:
+        scenes = [_build_shot_prompt(s) for s in shots]
+        durations = [int(max(4, min(15, s.get("duration_seconds", clip_dur)))) for s in shots]
+        transitions = [s.get("transition", "cut") for s in shots]
+    else:
+        durations = _plan_clip_durations(target_duration, min_dur=4, max_dur=clip_dur)
+        scenes = _split_scene_into_shots(video_prompt, len(durations))
+        transitions = None
+
+    is_t2v = model in _T2V_VIDEO_MODELS
+    is_ref = model.endswith("_ref")
+
+    # Native model audio: for the ASMR niche the model's own synchronized sound
+    # IS the content (TTS mixed quietly on top); and when there is no voiceover
+    # at all (e.g. 🗣 Voiceover OFF), ambient sound beats dead silence —
+    # mirrors the Kling multi-shot behaviour.
+    keep_native = (
+        settings.get("content_preset") == "asmr"
+        or not bool(voiceover_text and voiceover_text.strip())
+    )
+
+    # ── Reference-to-Video: all photos anchor every clip, no last-frame stitching ──
+    if is_ref:
+        if not valid_paths:
+            logger.error(f"Reference model {model} selected but no valid images provided")
+            raise RuntimeError(
+                f"Reference model requires images. "
+                f"None of {len(image_paths or [])} image path(s) exist on disk."
+            )
+        # Validate that LLM used image tags in scene_prompts
+        tag_warnings = _validate_ref_images_in_shots(
+            [{"scene_prompt": s} for s in scenes], model, len(valid_paths)
+        )
+        if tag_warnings:
+            logger.warning(f"Reference model {model}: LLM may not have referenced images: {tag_warnings}")
+            for warning in tag_warnings:
+                await notify(f"⚠️ {warning}")
+
+        uploaded_urls = list(await asyncio.gather(*[minimax.upload_photo(p) for p in valid_paths]))
+        if len(scenes) > 1:
+            durations = _add_crossfade_padding(durations, joints=len(scenes) - 1, max_dur=15)
+        await notify(
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
+            + f", {len(valid_paths)} ref photo(s)"
+            + (", native audio" if keep_native else "")
+            + ") — each clip takes ~3-5 min…"
+        )
+        clips = await minimax.generate_clips(
+            scene_prompts=scenes,
+            anchor_photo_urls=[uploaded_urls[0]] * len(scenes),
+            clip_duration=durations,
+            resolution=resolution,
+            aspect_ratio="9:16",
+            model_id=atlas_model_id,
+            keep_native_audio=keep_native,
+            all_reference_urls=uploaded_urls,
+        )
+        concat_transitions = transitions[:-1] if transitions else None
+        raw_video = (
+            await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
+            if len(clips) > 1 else clips[0]
+        )
+    elif not is_t2v and valid_paths:
+        uploaded_urls = list(await asyncio.gather(*[minimax.upload_photo(p) for p in valid_paths]))
+        total_dur = sum(durations)
+
+        if total_dur <= 15:
+            # Fits one Atlas call (assumed 15s per-request limit) — render all
+            # scenes continuously in a single multi-scene request.
+            await notify(
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} scene(s)"
+                + f", {total_dur}s total"
+                + (", native audio" if keep_native else "")
+                + ") — takes ~3-5 min…"
+            )
+            raw_video = await minimax.generate_multi_scene_clip(
+                scene_prompts=scenes,
+                image_url=uploaded_urls[0],
+                total_duration=total_dur,
+                resolution=resolution,
+                model_id=atlas_model_id,
+                keep_native_audio=keep_native,
+            )
+        else:
+            # Longer than one call allows — clip-by-clip with last-frame
+            # stitching for continuity, then FFmpeg concat.
+            durations = _add_crossfade_padding(durations, joints=len(scenes) - 1, max_dur=15)
+            total_dur = sum(durations)
+            await notify(
+                f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)"
+                + f", {total_dur}s total"
+                + (", native audio" if keep_native else "")
+                + ") — each clip takes ~3-5 min…"
+            )
+            n = len(uploaded_urls)
+            anchor_urls = [uploaded_urls[i % n] for i in range(len(scenes))]
+            clips = await minimax.generate_clips(
+                scene_prompts=scenes,
+                anchor_photo_urls=anchor_urls,
+                clip_duration=durations,
+                resolution=resolution,
+                aspect_ratio="9:16",
+                model_id=atlas_model_id,
+                keep_native_audio=keep_native,
+            )
+            concat_transitions = transitions[:-1] if transitions else None
+            raw_video = (
+                await gemini.concat_videos(clips, crossfade=0.5, transitions=concat_transitions)
+                if len(clips) > 1 else clips[0]
+            )
+    else:
+        # No reference images — fallback to T2V or clip-by-clip I2V with last-frame stitching
+        durations = _add_crossfade_padding(durations, joints=len(scenes) - 1, max_dur=15)
+        await notify(
+            f"⏱ Generating <b>{label}</b> ({len(scenes)} clip(s)) — each clip takes ~3-5 min…"
+        )
+        clips = []
+        anchor_image_url = ""
+        for i, (scene, dur) in enumerate(zip(scenes, durations)):
+            await notify(f"🎞 {label} clip {i + 1}/{len(scenes)}…")
+            effective = (
+                "Seamlessly continuing from previous scene — "
+                "same characters, same lighting, smooth flow. " + scene
+                if i > 0 else scene
+            )
+            clip = await minimax.generate_clip(
+                prompt=effective,
+                image_url=anchor_image_url,  # Empty string first iteration (triggers T2V), then last-frame
+                duration=dur,
+                resolution=resolution,
+                model_id=atlas_model_id,
+                keep_native_audio=keep_native,
+            )
+            clips.append(clip)
+            # Extract last frame for next clip's anchor (continuity stitching)
+            if i < len(scenes) - 1:
+                frame_path = await gemini.extract_last_frame(clip)
+                if frame_path:
+                    try:
+                        new_url = await minimax.upload_photo(frame_path)
                         if new_url:
                             anchor_image_url = new_url
                     finally:

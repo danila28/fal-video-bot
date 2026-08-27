@@ -506,8 +506,14 @@ async def settings_image_prompt(callback: CallbackQuery, state: FSMContext):
 def _video_model_label(model_key: str) -> str:
     """Human-readable label for a video_model settings key."""
     from services.kling import MODEL_LABELS as _KLING_LABELS
+    from services.minimax import MODEL_LABELS as _MINIMAX_LABELS
     from services.seedance import MODEL_LABELS as _SEEDANCE_LABELS
-    return _KLING_LABELS.get(model_key) or _SEEDANCE_LABELS.get(model_key) or model_key
+    return (
+        _KLING_LABELS.get(model_key)
+        or _SEEDANCE_LABELS.get(model_key)
+        or _MINIMAX_LABELS.get(model_key)
+        or model_key
+    )
 
 
 async def _show_style_menu(callback: CallbackQuery):

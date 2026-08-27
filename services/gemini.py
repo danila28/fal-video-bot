@@ -93,6 +93,10 @@ class GeminiService:
             {"name": "kling_turbo_t2v",    "price": "📝⚡ Kling v3 Turbo T2V · $0.095/s"},
             {"name": "kling_o3_pro_ref",   "price": "🎭 Kling O3 Pro Ref · $0.126/s"},
             {"name": "kling_o3_std_ref",   "price": "🎭 Kling O3 Std Ref · $0.10/s"},
+            {"separator": True, "label": "── MiniMax H3 ──"},
+            {"name": "minimax_h3",         "price": "🖼🆕 MiniMax H3 I2V · ~$0.09/s (price unverified)"},
+            {"name": "minimax_h3_t2v",     "price": "📝🆕 MiniMax H3 T2V · ~$0.09/s (price unverified)"},
+            {"name": "minimax_h3_ref",     "price": "🎭🆕 MiniMax H3 Ref · ~$0.09/s (price unverified)"},
         ]
 
     # ── Text generation ────────────────────────────────────────────────────

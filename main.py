@@ -13,6 +13,7 @@ from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
+from services.minimax import MiniMaxService
 from services.omni_edit import OmniEditService
 from services.seedance import SeedanceService
 from services.wan import WanEditService
@@ -64,6 +65,7 @@ async def main():
     )
     container.instance(KlingService(api_key=config["ATLAS_API_KEY"]))
     container.instance(SeedanceService(api_key=config["ATLAS_API_KEY"]))
+    container.instance(MiniMaxService(api_key=config["ATLAS_API_KEY"]))
     container.instance(OmniEditService(api_key=config["ATLAS_API_KEY"]))
     container.instance(WanEditService(api_key=config["ATLAS_API_KEY"]))
 
