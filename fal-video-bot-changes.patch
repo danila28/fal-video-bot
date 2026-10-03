@@ -1,0 +1,701 @@
+diff --git a/bot/middlewares.py b/bot/middlewares.py
+new file mode 100644
+index 0000000..903d1ff
+--- /dev/null
++++ b/bot/middlewares.py
+@@ -0,0 +1,58 @@
++from typing import Any, Awaitable, Callable
++
++from aiogram import BaseMiddleware
++from aiogram.types import TelegramObject
++
++from services.db import DBService
++from utils import container
++from utils.consts import allowed_users
++from utils.job_context import JobOwner, current_owner
++
++
++class JobOwnerMiddleware(BaseMiddleware):
++    """Expose (chat_id, user_id) of the current update to non-handler code.
++
++    Register as an *outer* update middleware so it runs for every update type.
++    `event_from_user` / `event_chat` are filled in by aiogram's built-in
++    UserContextMiddleware, which is registered before user middlewares.
++    """
++
++    async def __call__(
++        self,
++        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
++        event: TelegramObject,
++        data: dict[str, Any],
++    ) -> Any:
++        user = data.get("event_from_user")
++        chat = data.get("event_chat")
++        if user is None or chat is None:
++            return await handler(event, data)
++
++        token = current_owner.set(JobOwner(chat_id=chat.id, user_id=user.id))
++        try:
++            return await handler(event, data)
++        finally:
++            current_owner.reset(token)
++
++
++class EnsureIdentityMiddleware(BaseMiddleware):
++    """Make sure the sender and the chat exist in `users` / `chats`.
++
++    Every table that stores chat_id / user_id references those two tables
++    (migration 010), so the rows must exist before any handler writes.
++    Register as an outer update middleware. Only allowed users are registered:
++    all handlers sit behind IsAllowed, so strangers never write anything and
++    should not leave rows behind.
++    """
++
++    async def __call__(
++        self,
++        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
++        event: TelegramObject,
++        data: dict[str, Any],
++    ) -> Any:
++        user = data.get("event_from_user")
++        chat = data.get("event_chat")
++        if user is not None and chat is not None and user.id in allowed_users:
++            await container.inject(DBService).ensure_identity(user.id, chat.id, chat.type)
++        return await handler(event, data)
+diff --git a/main.py b/main.py
+index 696aaeb..e06e2da 100644
+--- a/main.py
++++ b/main.py
+@@ -21,7 +21,9 @@ from utils import container
+ from utils.config import config
+ from aiogram import Bot, Dispatcher
+ from bot.handlers import router
+-from utils.cleanup import run_cleanup_loop
++from bot.middlewares import EnsureIdentityMiddleware, JobOwnerMiddleware
++from utils.cleanup import run_cleanup_loop, run_jobs_cleanup_loop
++from utils.recovery import recover_interrupted_jobs
+ from utils.migrations import run_migrations
+ 
+ 
+@@ -53,7 +55,8 @@ async def main():
+ 
+     storage = PostgresStorage(pool=pool)
+ 
+-    container.instance(DBService(pool=pool, bot_id="fvb"))
++    db = DBService(pool=pool, bot_id="fvb")
++    container.instance(db)
+ 
+     container.instance(GeminiService(api_key=config["GEMINI_API_KEY"]))
+ 
+@@ -83,12 +86,26 @@ async def main():
+     )
+ 
+     dp = Dispatcher(storage=storage)
++    # Registers the sender / chat in `users` / `chats` before any handler runs
++    # (foreign keys, migration 010).
++    dp.update.outer_middleware(EnsureIdentityMiddleware())
++    # Lets AtlasClient record which chat/user a job belongs to (jobs table).
++    dp.update.outer_middleware(JobOwnerMiddleware())
+     dp.include_router(router)
+ 
+     await bot.delete_my_commands()
+ 
++    # Close jobs left in flight by the previous process and tell their users.
++    # Must run before polling starts, while nothing of ours can be in flight.
++    await recover_interrupted_jobs(bot, db, storage)
++
+     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+-    asyncio.create_task(run_cleanup_loop(static_dir))
++    # Keep references: the event loop only holds weak refs to tasks, so an
++    # unreferenced background task can be garbage-collected mid-run.
++    background_tasks = {
++        asyncio.create_task(run_cleanup_loop(static_dir)),
++        asyncio.create_task(run_jobs_cleanup_loop(db)),
++    }
+ 
+     logger.info("Starting polling...")
+     await dp.start_polling(bot)
+diff --git a/migrations/009_jobs.sql b/migrations/009_jobs.sql
+new file mode 100644
+index 0000000..a8c2302
+--- /dev/null
++++ b/migrations/009_jobs.sql
+@@ -0,0 +1,36 @@
++-- Atlas jobs: one row per submitted generation job (video or image).
++--
++-- Why: the Atlas prediction id used to live only in a local variable, so a
++-- restart (every deploy runs `docker compose down`) orphaned paid jobs and left
++-- users without any reply. Persisting the id lets the bot, on the next start,
++-- find jobs that were in flight, tell the affected users and reset their state.
++--
++-- status lifecycle:
++--   submitted    -> Atlas accepted the job, we are polling it
++--   completed    -> Atlas finished, output url received
++--   failed       -> Atlas reported failure / timeout / poll error
++--   interrupted  -> bot restarted while the job was in flight (user notified)
++--   expired      -> same, but too old to be worth notifying about
++--
++-- bot_id is part of the key because this database is shared with video-gen-bot.
++CREATE TABLE IF NOT EXISTS jobs (
++    bot_id     TEXT        NOT NULL,
++    pred_id    TEXT        NOT NULL,
++    user_id    BIGINT      NOT NULL,
++    chat_id    BIGINT      NOT NULL,
++    model      TEXT        NOT NULL,
++    status     TEXT        NOT NULL DEFAULT 'submitted'
++               CHECK (status IN ('submitted', 'completed', 'failed', 'interrupted', 'expired')),
++    error_text TEXT,
++    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    PRIMARY KEY (bot_id, pred_id)
++);
++
++-- Startup recovery only looks at in-flight rows — keep that lookup tiny.
++CREATE INDEX IF NOT EXISTS jobs_inflight
++    ON jobs (bot_id) WHERE status = 'submitted';
++
++-- Daily retention sweep deletes by age.
++CREATE INDEX IF NOT EXISTS jobs_created_at
++    ON jobs (created_at);
+diff --git a/migrations/010_users_chats.sql b/migrations/010_users_chats.sql
+new file mode 100644
+index 0000000..bd8cf8e
+--- /dev/null
++++ b/migrations/010_users_chats.sql
+@@ -0,0 +1,89 @@
++-- Reference tables for Telegram users and chats + foreign keys.
++--
++-- Until now every table carried bare chat_id / user_id numbers with nothing to
++-- tie them to. That meant no referential integrity (typos and orphan rows
++-- were possible) and no way to remove everything that belongs to a user or a
++-- chat in one statement. Now:
++--   users(user_id) and chats(chat_id) are the parents,
++--   every other table references them with ON DELETE CASCADE,
++--   so `DELETE FROM users WHERE user_id = X` wipes that user's settings,
++--   FSM state, history, logs and jobs.
++--
++-- The bot keeps the parents filled: see EnsureIdentityMiddleware, which runs
++-- before every handler.
++
++CREATE TABLE IF NOT EXISTS users (
++    user_id    BIGINT      PRIMARY KEY,
++    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++CREATE TABLE IF NOT EXISTS chats (
++    chat_id    BIGINT      PRIMARY KEY,
++    chat_type  TEXT        NOT NULL
++               CHECK (chat_type IN ('private', 'group', 'supergroup', 'channel')),
++    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++-- ── Backfill from everything already in the database ────────────────────────
++-- Foreign keys below fail validation if any child row has no parent, so every
++-- id that exists anywhere has to be registered first.
++INSERT INTO users (user_id)
++SELECT user_id FROM (
++    SELECT user_id FROM fsm_states
++    UNION SELECT user_id FROM fsm_data
++    UNION SELECT user_id FROM user_settings
++    UNION SELECT user_id FROM generation_log
++    UNION SELECT user_id FROM video_history
++    UNION SELECT user_id FROM jobs
++) AS ids
++ON CONFLICT DO NOTHING;
++
++-- Telegram id ranges: positive = private chat, -100xxxxxxxxxx = supergroup or
++-- channel, other negatives = basic group. Channels cannot be told apart from
++-- supergroups by id alone, so backfilled rows get 'supergroup'; the bot
++-- corrects chat_type from the real update the next time that chat is seen.
++INSERT INTO chats (chat_id, chat_type)
++SELECT chat_id,
++       CASE WHEN chat_id > 0 THEN 'private'
++            WHEN chat_id < -1000000000000 THEN 'supergroup'
++            ELSE 'group' END
++FROM (
++    SELECT chat_id FROM fsm_states
++    UNION SELECT chat_id FROM fsm_data
++    UNION SELECT chat_id FROM user_settings
++    UNION SELECT chat_id FROM chat_accounts
++    UNION SELECT chat_id FROM generation_log
++    UNION SELECT chat_id FROM video_history
++    UNION SELECT chat_id FROM jobs
++) AS ids
++ON CONFLICT DO NOTHING;
++
++-- ── Foreign keys ────────────────────────────────────────────────────────────
++-- No extra indexes on the child columns: cascade deletes are rare and these
++-- tables are small. Add them if a user/chat delete ever becomes slow.
++ALTER TABLE fsm_states
++    ADD CONSTRAINT fsm_states_user_fk FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
++    ADD CONSTRAINT fsm_states_chat_fk FOREIGN KEY (chat_id) REFERENCES chats (chat_id) ON DELETE CASCADE;
++
++ALTER TABLE fsm_data
++    ADD CONSTRAINT fsm_data_user_fk FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
++    ADD CONSTRAINT fsm_data_chat_fk FOREIGN KEY (chat_id) REFERENCES chats (chat_id) ON DELETE CASCADE;
++
++ALTER TABLE user_settings
++    ADD CONSTRAINT user_settings_user_fk FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
++    ADD CONSTRAINT user_settings_chat_fk FOREIGN KEY (chat_id) REFERENCES chats (chat_id) ON DELETE CASCADE;
++
++ALTER TABLE chat_accounts
++    ADD CONSTRAINT chat_accounts_chat_fk FOREIGN KEY (chat_id) REFERENCES chats (chat_id) ON DELETE CASCADE;
++
++ALTER TABLE generation_log
++    ADD CONSTRAINT generation_log_user_fk FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
++    ADD CONSTRAINT generation_log_chat_fk FOREIGN KEY (chat_id) REFERENCES chats (chat_id) ON DELETE CASCADE;
++
++ALTER TABLE video_history
++    ADD CONSTRAINT video_history_user_fk FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
++    ADD CONSTRAINT video_history_chat_fk FOREIGN KEY (chat_id) REFERENCES chats (chat_id) ON DELETE CASCADE;
++
++ALTER TABLE jobs
++    ADD CONSTRAINT jobs_user_fk FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
++    ADD CONSTRAINT jobs_chat_fk FOREIGN KEY (chat_id) REFERENCES chats (chat_id) ON DELETE CASCADE;
+diff --git a/services/atlas.py b/services/atlas.py
+index 9e45871..5d0b696 100644
+--- a/services/atlas.py
++++ b/services/atlas.py
+@@ -7,6 +7,10 @@ import uuid
+ 
+ import aiohttp
+ 
++from services.db import DBService
++from utils import container
++from utils.job_context import current_owner
++
+ logger = logging.getLogger(__name__)
+ 
+ _BASE_URL      = "https://api.atlascloud.ai/api/v1"
+@@ -103,77 +107,108 @@ class AtlasClient:
+                 raise Exception(f"No prediction id in Atlas response: {data}")
+             logger.info(f"Atlas {endpoint}: model={model} id={pred_id}")
+ 
+-            # ── Poll ─────────────────────────────────────────────────
+-            poll_url = f"{_BASE_URL}/model/prediction/{pred_id}"
+-            elapsed = 0
+-            consecutive_errors = 0
+-            while elapsed < _POLL_TIMEOUT:
+-                await asyncio.sleep(_POLL_INTERVAL)
+-                elapsed += _POLL_INTERVAL
+-
+-                try:
+-                    async with session.get(
+-                        poll_url, headers=self._auth_headers
+-                    ) as resp:
+-                        if resp.status != 200:
+-                            text = await resp.text()
+-                            # Atlas's gateway occasionally returns a transient
+-                            # 5xx (HTML error page) mid-generation — retry a
+-                            # few times instead of failing the whole job.
+-                            if resp.status >= 500 and consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
+-                                consecutive_errors += 1
+-                                logger.warning(
+-                                    f"Atlas poll transient HTTP {resp.status} "
+-                                    f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
+-                                    f"retrying: {pred_id}"
+-                                )
+-                                continue
+-                            raise Exception(
+-                                f"Atlas poll failed HTTP {resp.status}: {text[:200]}"
++            await self._track_start(pred_id, model)
++            try:
++                output_url = await self._poll(session, pred_id, model)
++            except Exception as e:
++                await self._track_finish(pred_id, "failed", str(e))
++                raise
++            await self._track_finish(pred_id, "completed")
++            return output_url
++
++    async def _poll(self, session: aiohttp.ClientSession, pred_id: str, model: str) -> str:
++        """Poll Atlas until the prediction completes. Returns the first output URL."""
++        poll_url = f"{_BASE_URL}/model/prediction/{pred_id}"
++        elapsed = 0
++        consecutive_errors = 0
++        while elapsed < _POLL_TIMEOUT:
++            await asyncio.sleep(_POLL_INTERVAL)
++            elapsed += _POLL_INTERVAL
++
++            try:
++                async with session.get(
++                    poll_url, headers=self._auth_headers
++                ) as resp:
++                    if resp.status != 200:
++                        text = await resp.text()
++                        # Atlas's gateway occasionally returns a transient
++                        # 5xx (HTML error page) mid-generation — retry a
++                        # few times instead of failing the whole job.
++                        if resp.status >= 500 and consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
++                            consecutive_errors += 1
++                            logger.warning(
++                                f"Atlas poll transient HTTP {resp.status} "
++                                f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
++                                f"retrying: {pred_id}"
+                             )
+-                        poll = await resp.json()
+-                except aiohttp.ClientError as e:
+-                    if consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
+-                        consecutive_errors += 1
+-                        logger.warning(
+-                            f"Atlas poll network error "
+-                            f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
+-                            f"retrying: {pred_id}: {e}"
++                            continue
++                        raise Exception(
++                            f"Atlas poll failed HTTP {resp.status}: {text[:200]}"
+                         )
+-                        continue
+-                    raise Exception(f"Atlas poll network error: {e}")
++                    poll = await resp.json()
++            except aiohttp.ClientError as e:
++                if consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
++                    consecutive_errors += 1
++                    logger.warning(
++                        f"Atlas poll network error "
++                        f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
++                        f"retrying: {pred_id}: {e}"
++                    )
++                    continue
++                raise Exception(f"Atlas poll network error: {e}")
+ 
+-                consecutive_errors = 0
++            consecutive_errors = 0
+ 
+-                # Normalise: {"data": {...}} or flat {"status": ...}
+-                status_data = poll.get("data") or poll
+-                status = status_data.get("status")
++            # Normalise: {"data": {...}} or flat {"status": ...}
++            status_data = poll.get("data") or poll
++            status = status_data.get("status")
+ 
+-                if status in ("completed", "succeeded"):
+-                    # Video uses "outputs", image uses "output"
+-                    outputs = (
+-                        status_data.get("outputs")
+-                        or status_data.get("output")
+-                        or []
++            if status in ("completed", "succeeded"):
++                # Video uses "outputs", image uses "output"
++                outputs = (
++                    status_data.get("outputs")
++                    or status_data.get("output")
++                    or []
++                )
++                if not outputs:
++                    raise Exception(
++                        f"Atlas completed but no outputs in response: {poll}"
+                     )
+-                    if not outputs:
+-                        raise Exception(
+-                            f"Atlas completed but no outputs in response: {poll}"
+-                        )
+-                    return outputs[0]
++                return outputs[0]
+ 
+-                if status == "failed":
+-                    error = status_data.get("error") or "unknown error"
+-                    raise Exception(f"Atlas generation failed: {error}")
++            if status == "failed":
++                error = status_data.get("error") or "unknown error"
++                raise Exception(f"Atlas generation failed: {error}")
+ 
+-                logger.debug(
+-                    f"Atlas poll: {pred_id} → {status} ({elapsed}s elapsed)"
+-                )
++            logger.debug(
++                f"Atlas poll: {pred_id} → {status} ({elapsed}s elapsed)"
++            )
+ 
+         raise Exception(
+             f"Atlas generation timeout after {_POLL_TIMEOUT}s: model={model}"
+         )
+ 
++    # ── Job tracking (restart recovery, see migrations/009_jobs.sql) ───────
++
++    @staticmethod
++    async def _track_start(pred_id: str, model: str) -> None:
++        owner = current_owner.get()
++        if owner is None:
++            return  # not inside a Telegram update — nobody to notify later
++        try:
++            db = container.inject(DBService)
++        except KeyError:
++            return
++        await db.create_job(pred_id, owner.user_id, owner.chat_id, model)
++
++    @staticmethod
++    async def _track_finish(pred_id: str, status: str, error_text: str | None = None) -> None:
++        try:
++            db = container.inject(DBService)
++        except KeyError:
++            return
++        await db.finish_job(pred_id, status, error_text)
++
+     # ── Download ───────────────────────────────────────────────────────────
+ 
+     async def download(self, url: str, ext: str = "mp4") -> str:
+diff --git a/services/db.py b/services/db.py
+index 0170826..12e73a7 100644
+--- a/services/db.py
++++ b/services/db.py
+@@ -10,6 +10,31 @@ class DBService:
+         self.pool = pool
+         self.bot_id = bot_id
+ 
++    # ─────────────────────────────────────────────
++    # USERS / CHATS (parents of every chat_id / user_id foreign key)
++    # ─────────────────────────────────────────────
++
++    async def ensure_identity(self, user_id: int, chat_id: int, chat_type: str) -> None:
++        """Register the user and chat of the current update (idempotent).
++
++        One round-trip, no write when both rows already exist. Must run before
++        any handler writes to a table that references users / chats.
++        """
++        async with self.pool.acquire() as conn:
++            await conn.execute(
++                """
++                WITH u AS (
++                    INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING
++                )
++                INSERT INTO chats (chat_id, chat_type) VALUES ($2, $3)
++                ON CONFLICT (chat_id) DO UPDATE SET chat_type = EXCLUDED.chat_type
++                WHERE chats.chat_type IS DISTINCT FROM EXCLUDED.chat_type
++                """,
++                user_id,
++                chat_id,
++                chat_type,
++            )
++
+     # ─────────────────────────────────────────────
+     # USER SETTINGS (per user × chat × bot)
+     # ─────────────────────────────────────────────
+@@ -180,3 +205,94 @@ class DBService:
+                 limit,
+             )
+             return [dict(r) for r in rows]
++
++    # ─────────────────────────────────────────────
++    # JOBS (Atlas predictions — see migrations/009_jobs.sql)
++    # ─────────────────────────────────────────────
++
++    async def create_job(
++        self, pred_id: str, user_id: int, chat_id: int, model: str
++    ) -> None:
++        """Record a freshly submitted Atlas job (non-fatal on error)."""
++        try:
++            async with self.pool.acquire() as conn:
++                await conn.execute(
++                    """
++                    INSERT INTO jobs (bot_id, pred_id, user_id, chat_id, model)
++                    VALUES ($1, $2, $3, $4, $5)
++                    ON CONFLICT (bot_id, pred_id) DO NOTHING
++                    """,
++                    self.bot_id,
++                    pred_id,
++                    user_id,
++                    chat_id,
++                    model,
++                )
++        except Exception:
++            import logging
++            logging.getLogger(__name__).warning(
++                "create_job failed (non-fatal)", exc_info=True
++            )
++
++    async def finish_job(
++        self, pred_id: str, status: str, error_text: str | None = None
++    ) -> None:
++        """Move an in-flight job to a final status (non-fatal on error).
++
++        Only touches rows still in 'submitted', so a late update can never
++        overwrite 'interrupted' / 'expired' set by startup recovery.
++        """
++        try:
++            async with self.pool.acquire() as conn:
++                await conn.execute(
++                    """
++                    UPDATE jobs
++                    SET status = $3, error_text = $4, updated_at = NOW()
++                    WHERE bot_id = $1 AND pred_id = $2 AND status = 'submitted'
++                    """,
++                    self.bot_id,
++                    pred_id,
++                    status,
++                    error_text[:500] if error_text else None,
++                )
++        except Exception:
++            import logging
++            logging.getLogger(__name__).warning(
++                "finish_job failed (non-fatal)", exc_info=True
++            )
++
++    async def interrupt_inflight_jobs(self, max_notify_age_minutes: int) -> list[dict]:
++        """Close every job still 'submitted' for this bot; return the closed rows.
++
++        Call once at startup, before polling begins: nothing can be in flight
++        then, so all such rows are leftovers of a dead process. Recent ones
++        become 'interrupted' (worth telling the user), older ones 'expired'.
++        A single UPDATE ... RETURNING keeps this atomic.
++        """
++        async with self.pool.acquire() as conn:
++            rows = await conn.fetch(
++                """
++                UPDATE jobs
++                SET status = CASE
++                        WHEN created_at > NOW() - make_interval(mins => $2)
++                        THEN 'interrupted' ELSE 'expired' END,
++                    updated_at = NOW()
++                WHERE bot_id = $1 AND status = 'submitted'
++                RETURNING pred_id, user_id, chat_id, model, status
++                """,
++                self.bot_id,
++                max_notify_age_minutes,
++            )
++            return [dict(r) for r in rows]
++
++    async def delete_old_jobs(self, older_than_days: int) -> int:
++        """Retention sweep. Returns number of deleted rows."""
++        async with self.pool.acquire() as conn:
++            result = await conn.execute(
++                "DELETE FROM jobs WHERE bot_id = $1 "
++                "AND created_at < NOW() - make_interval(days => $2)",
++                self.bot_id,
++                older_than_days,
++            )
++            # asyncpg returns e.g. "DELETE 5"
++            return int(result.split()[-1])
+diff --git a/utils/cleanup.py b/utils/cleanup.py
+index e340ed9..401739e 100644
+--- a/utils/cleanup.py
++++ b/utils/cleanup.py
+@@ -60,3 +60,28 @@ async def run_cleanup_loop(static_dir: str):
+             # Never let a sweep crash kill the loop — log and try again.
+             logger.error(f"cleanup: sweep failed: {e}")
+         await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
++
++
++# ── Jobs table retention ─────────────────────────────────────────────────────
++
++JOBS_RETENTION_DAYS = 30
++JOBS_SWEEP_INTERVAL_SECONDS = 24 * 60 * 60  # once a day
++
++
++async def run_jobs_cleanup_loop(db):
++    """Async task — deletes `jobs` rows older than JOBS_RETENTION_DAYS daily.
++
++    `db` is a DBService (duck-typed to keep this module free of service imports).
++    """
++    logger.info(
++        f"jobs cleanup: started (retention={JOBS_RETENTION_DAYS}d, "
++        f"interval={JOBS_SWEEP_INTERVAL_SECONDS}s)"
++    )
++    while True:
++        try:
++            removed = await db.delete_old_jobs(JOBS_RETENTION_DAYS)
++            if removed:
++                logger.info(f"jobs cleanup: removed {removed} old rows")
++        except Exception as e:
++            logger.error(f"jobs cleanup: sweep failed: {e}")
++        await asyncio.sleep(JOBS_SWEEP_INTERVAL_SECONDS)
+diff --git a/utils/job_context.py b/utils/job_context.py
+new file mode 100644
+index 0000000..66076ca
+--- /dev/null
++++ b/utils/job_context.py
+@@ -0,0 +1,22 @@
++"""Who is the current generation job being run for?
++
++AtlasClient is shared by every generation service and knows nothing about
++Telegram. To record `chat_id` / `user_id` for a job without threading them
++through ~30 call sites, a middleware stores them in a ContextVar at the start
++of each update; AtlasClient reads them when it submits a job.
++
++ContextVars are copied into child tasks, so this also works inside
++`asyncio.gather(...)` and `asyncio.to_thread(...)`.
++"""
++
++from contextvars import ContextVar
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class JobOwner:
++    chat_id: int
++    user_id: int
++
++
++current_owner: ContextVar[JobOwner | None] = ContextVar("current_job_owner", default=None)
+diff --git a/utils/recovery.py b/utils/recovery.py
+new file mode 100644
+index 0000000..c45178f
+--- /dev/null
++++ b/utils/recovery.py
+@@ -0,0 +1,67 @@
++"""Startup recovery for generation jobs that were in flight during a restart.
++
++Runs once, before polling starts. At that moment no job of this bot can really
++be in flight, so every row still marked `submitted` belongs to a previous
++process that died (typically a deploy).
++
++For each affected user we reset the `generation_in_progress` FSM flag (so the
++bot does not answer "please wait" for up to 30 minutes) and, if the job is
++recent enough to matter, tell them the generation was interrupted.
++"""
++
++import logging
++
++from aiogram import Bot
++from aiogram.fsm.storage.base import StorageKey
++
++from bot.storage import PostgresStorage
++from services.db import DBService
++
++logger = logging.getLogger(__name__)
++
++# Jobs older than this are marked `expired` and the user is not notified.
++MAX_NOTIFY_AGE_MINUTES = 30
++
++_INTERRUPTED_TEXT = (
++    "⚠️ The bot was restarted while your generation was running, so it was "
++    "interrupted. Please start it again."
++)
++
++
++async def recover_interrupted_jobs(
++    bot: Bot, db: DBService, storage: PostgresStorage
++) -> None:
++    """Never raises: a recovery failure must not prevent the bot from starting."""
++    try:
++        jobs = await db.interrupt_inflight_jobs(MAX_NOTIFY_AGE_MINUTES)
++        if not jobs:
++            return
++        logger.info(f"recovery: {len(jobs)} in-flight job(s) from previous run")
++
++        owners = {(j["chat_id"], j["user_id"]) for j in jobs}
++        to_notify = {
++            (j["chat_id"], j["user_id"]) for j in jobs if j["status"] == "interrupted"
++        }
++
++        for chat_id, user_id in owners:
++            key = StorageKey(bot_id=bot.id, chat_id=chat_id, user_id=user_id)
++            try:
++                data = await storage.get_data(key)
++                if data.get("generation_in_progress"):
++                    await storage.update_data(
++                        key, {"generation_in_progress": False, "generation_started_at": 0}
++                    )
++            except Exception:
++                logger.warning(
++                    f"recovery: cannot reset FSM flag for chat={chat_id} user={user_id}",
++                    exc_info=True,
++                )
++
++        for chat_id, _user_id in to_notify:
++            try:
++                await bot.send_message(chat_id, _INTERRUPTED_TEXT)
++            except Exception as e:
++                # User blocked the bot / chat gone — nothing more to do.
++                logger.warning(f"recovery: cannot notify chat={chat_id}: {e}")
++    except Exception:
++        logger.error("recovery: failed (bot continues to start)", exc_info=True)

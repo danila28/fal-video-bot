@@ -21,7 +21,9 @@ from utils import container
 from utils.config import config
 from aiogram import Bot, Dispatcher
 from bot.handlers import router
-from utils.cleanup import run_cleanup_loop
+from bot.middlewares import EnsureIdentityMiddleware, JobOwnerMiddleware
+from utils.cleanup import run_cleanup_loop, run_jobs_cleanup_loop
+from utils.recovery import recover_interrupted_jobs
 from utils.migrations import run_migrations
 
 
@@ -53,7 +55,8 @@ async def main():
 
     storage = PostgresStorage(pool=pool)
 
-    container.instance(DBService(pool=pool, bot_id="fvb"))
+    db = DBService(pool=pool, bot_id="fvb")
+    container.instance(db)
 
     container.instance(GeminiService(api_key=config["GEMINI_API_KEY"]))
 
@@ -83,12 +86,26 @@ async def main():
     )
 
     dp = Dispatcher(storage=storage)
+    # Registers the sender / chat in `users` / `chats` before any handler runs
+    # (foreign keys, migration 010).
+    dp.update.outer_middleware(EnsureIdentityMiddleware())
+    # Lets AtlasClient record which chat/user a job belongs to (jobs table).
+    dp.update.outer_middleware(JobOwnerMiddleware())
     dp.include_router(router)
 
     await bot.delete_my_commands()
 
+    # Close jobs left in flight by the previous process and tell their users.
+    # Must run before polling starts, while nothing of ours can be in flight.
+    await recover_interrupted_jobs(bot, db, storage)
+
     static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-    asyncio.create_task(run_cleanup_loop(static_dir))
+    # Keep references: the event loop only holds weak refs to tasks, so an
+    # unreferenced background task can be garbage-collected mid-run.
+    background_tasks = {
+        asyncio.create_task(run_cleanup_loop(static_dir)),
+        asyncio.create_task(run_jobs_cleanup_loop(db)),
+    }
 
     logger.info("Starting polling...")
     await dp.start_polling(bot)

@@ -7,6 +7,10 @@ import uuid
 
 import aiohttp
 
+from services.db import DBService
+from utils import container
+from utils.job_context import current_owner
+
 logger = logging.getLogger(__name__)
 
 _BASE_URL      = "https://api.atlascloud.ai/api/v1"
@@ -103,76 +107,107 @@ class AtlasClient:
                 raise Exception(f"No prediction id in Atlas response: {data}")
             logger.info(f"Atlas {endpoint}: model={model} id={pred_id}")
 
-            # ── Poll ─────────────────────────────────────────────────
-            poll_url = f"{_BASE_URL}/model/prediction/{pred_id}"
-            elapsed = 0
-            consecutive_errors = 0
-            while elapsed < _POLL_TIMEOUT:
-                await asyncio.sleep(_POLL_INTERVAL)
-                elapsed += _POLL_INTERVAL
+            await self._track_start(pred_id, model)
+            try:
+                output_url = await self._poll(session, pred_id, model)
+            except Exception as e:
+                await self._track_finish(pred_id, "failed", str(e))
+                raise
+            await self._track_finish(pred_id, "completed")
+            return output_url
 
-                try:
-                    async with session.get(
-                        poll_url, headers=self._auth_headers
-                    ) as resp:
-                        if resp.status != 200:
-                            text = await resp.text()
-                            # Atlas's gateway occasionally returns a transient
-                            # 5xx (HTML error page) mid-generation — retry a
-                            # few times instead of failing the whole job.
-                            if resp.status >= 500 and consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
-                                consecutive_errors += 1
-                                logger.warning(
-                                    f"Atlas poll transient HTTP {resp.status} "
-                                    f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
-                                    f"retrying: {pred_id}"
-                                )
-                                continue
-                            raise Exception(
-                                f"Atlas poll failed HTTP {resp.status}: {text[:200]}"
+    async def _poll(self, session: aiohttp.ClientSession, pred_id: str, model: str) -> str:
+        """Poll Atlas until the prediction completes. Returns the first output URL."""
+        poll_url = f"{_BASE_URL}/model/prediction/{pred_id}"
+        elapsed = 0
+        consecutive_errors = 0
+        while elapsed < _POLL_TIMEOUT:
+            await asyncio.sleep(_POLL_INTERVAL)
+            elapsed += _POLL_INTERVAL
+
+            try:
+                async with session.get(
+                    poll_url, headers=self._auth_headers
+                ) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        # Atlas's gateway occasionally returns a transient
+                        # 5xx (HTML error page) mid-generation — retry a
+                        # few times instead of failing the whole job.
+                        if resp.status >= 500 and consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
+                            consecutive_errors += 1
+                            logger.warning(
+                                f"Atlas poll transient HTTP {resp.status} "
+                                f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
+                                f"retrying: {pred_id}"
                             )
-                        poll = await resp.json()
-                except aiohttp.ClientError as e:
-                    if consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
-                        consecutive_errors += 1
-                        logger.warning(
-                            f"Atlas poll network error "
-                            f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
-                            f"retrying: {pred_id}: {e}"
-                        )
-                        continue
-                    raise Exception(f"Atlas poll network error: {e}")
-
-                consecutive_errors = 0
-
-                # Normalise: {"data": {...}} or flat {"status": ...}
-                status_data = poll.get("data") or poll
-                status = status_data.get("status")
-
-                if status in ("completed", "succeeded"):
-                    # Video uses "outputs", image uses "output"
-                    outputs = (
-                        status_data.get("outputs")
-                        or status_data.get("output")
-                        or []
-                    )
-                    if not outputs:
+                            continue
                         raise Exception(
-                            f"Atlas completed but no outputs in response: {poll}"
+                            f"Atlas poll failed HTTP {resp.status}: {text[:200]}"
                         )
-                    return outputs[0]
+                    poll = await resp.json()
+            except aiohttp.ClientError as e:
+                if consecutive_errors < _POLL_MAX_TRANSIENT_ERRORS:
+                    consecutive_errors += 1
+                    logger.warning(
+                        f"Atlas poll network error "
+                        f"({consecutive_errors}/{_POLL_MAX_TRANSIENT_ERRORS}), "
+                        f"retrying: {pred_id}: {e}"
+                    )
+                    continue
+                raise Exception(f"Atlas poll network error: {e}")
 
-                if status == "failed":
-                    error = status_data.get("error") or "unknown error"
-                    raise Exception(f"Atlas generation failed: {error}")
+            consecutive_errors = 0
 
-                logger.debug(
-                    f"Atlas poll: {pred_id} → {status} ({elapsed}s elapsed)"
+            # Normalise: {"data": {...}} or flat {"status": ...}
+            status_data = poll.get("data") or poll
+            status = status_data.get("status")
+
+            if status in ("completed", "succeeded"):
+                # Video uses "outputs", image uses "output"
+                outputs = (
+                    status_data.get("outputs")
+                    or status_data.get("output")
+                    or []
                 )
+                if not outputs:
+                    raise Exception(
+                        f"Atlas completed but no outputs in response: {poll}"
+                    )
+                return outputs[0]
+
+            if status == "failed":
+                error = status_data.get("error") or "unknown error"
+                raise Exception(f"Atlas generation failed: {error}")
+
+            logger.debug(
+                f"Atlas poll: {pred_id} → {status} ({elapsed}s elapsed)"
+            )
 
         raise Exception(
             f"Atlas generation timeout after {_POLL_TIMEOUT}s: model={model}"
         )
+
+    # ── Job tracking (restart recovery, see migrations/009_jobs.sql) ───────
+
+    @staticmethod
+    async def _track_start(pred_id: str, model: str) -> None:
+        owner = current_owner.get()
+        if owner is None:
+            return  # not inside a Telegram update — nobody to notify later
+        try:
+            db = container.inject(DBService)
+        except KeyError:
+            return
+        await db.create_job(pred_id, owner.user_id, owner.chat_id, model)
+
+    @staticmethod
+    async def _track_finish(pred_id: str, status: str, error_text: str | None = None) -> None:
+        try:
+            db = container.inject(DBService)
+        except KeyError:
+            return
+        await db.finish_job(pred_id, status, error_text)
 
     # ── Download ───────────────────────────────────────────────────────────
 

@@ -60,3 +60,28 @@ async def run_cleanup_loop(static_dir: str):
             # Never let a sweep crash kill the loop — log and try again.
             logger.error(f"cleanup: sweep failed: {e}")
         await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+
+
+# ── Jobs table retention ─────────────────────────────────────────────────────
+
+JOBS_RETENTION_DAYS = 30
+JOBS_SWEEP_INTERVAL_SECONDS = 24 * 60 * 60  # once a day
+
+
+async def run_jobs_cleanup_loop(db):
+    """Async task — deletes `jobs` rows older than JOBS_RETENTION_DAYS daily.
+
+    `db` is a DBService (duck-typed to keep this module free of service imports).
+    """
+    logger.info(
+        f"jobs cleanup: started (retention={JOBS_RETENTION_DAYS}d, "
+        f"interval={JOBS_SWEEP_INTERVAL_SECONDS}s)"
+    )
+    while True:
+        try:
+            removed = await db.delete_old_jobs(JOBS_RETENTION_DAYS)
+            if removed:
+                logger.info(f"jobs cleanup: removed {removed} old rows")
+        except Exception as e:
+            logger.error(f"jobs cleanup: sweep failed: {e}")
+        await asyncio.sleep(JOBS_SWEEP_INTERVAL_SECONDS)
