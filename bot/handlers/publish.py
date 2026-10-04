@@ -14,6 +14,7 @@ from bot.states import GenerationState
 from services.blotato import BlotatoService
 from services.db import DBService
 from services.gemini import GeminiService
+from services.llm import LLMService
 from utils import container
 from utils.consts import allowed_users, get_hashtags_prompt_for_platforms
 from bot.handlers.common import _is_generating
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 async def _do_publish(msg: Message, user_id: int, state: FSMContext, scheduled_at: str = ""):
     """Shared publish logic used by both 'now' and 'scheduled' paths."""
     blotato = container.inject(BlotatoService)
-    vertex = container.inject(GeminiService)
+    llm = container.inject(LLMService)
     db = container.inject(DBService)
 
     try:
@@ -76,7 +77,7 @@ async def _do_publish(msg: Message, user_id: int, state: FSMContext, scheduled_a
         publish_platforms = {acc["platform"] for acc in chat_accounts}
         hashtag_prompt = get_hashtags_prompt_for_platforms(publish_platforms)
         try:
-            hashtags = await vertex.generate_text(enhance_prompt, hashtag_prompt, text_model)
+            hashtags = await llm.generate_text(enhance_prompt, hashtag_prompt, text_model)
         except Exception as ht_err:
             logger.warning(f"Hashtag generation failed, using cached: {ht_err}")
             hashtags = data.get("cached_hashtags") or ""

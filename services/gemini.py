@@ -1,11 +1,9 @@
-"""Gemini text generation + ffmpeg post-processing.
+"""ffmpeg post-processing utilities.
 
-This service replaces video-gen-bot's VertexService for atlas-video-bot.
-Video generation lives in dedicated Atlas Cloud services (Kling / Seedance);
-this module keeps only:
-  • Gemini text generation (idea / plot / image / video prompts, hashtags)
-  • ffmpeg helpers shared across pipelines: mux audio, karaoke ASS,
-    apply grade, apply speed, concat, append outro, extract last frame.
+This service provides video processing helpers: mux audio, karaoke ASS,
+apply grade, apply speed, concat, append outro, extract last frame.
+
+Text generation was moved to services/llm.py with multi-provider support.
 """
 
 import asyncio
@@ -14,43 +12,21 @@ import os
 import re
 import uuid
 import ffmpeg
-from google import genai
-from google.genai import types
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    before_sleep_log,
-)
 
 logger = logging.getLogger(__name__)
 
 
-_retry_cheap = retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    reraise=True,
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-)
-
-
 class GeminiService:
-    """Gemini text + ffmpeg post-processing utilities."""
+    """ffmpeg post-processing utilities for video generation."""
 
-    def __init__(self, api_key: str):
-        self.client = genai.Client(api_key=api_key)
+    def __init__(self, api_key: str = ""):
+        # api_key no longer used (text generation moved to LLMService)
+        # kept for backwards compatibility
         self.static_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
         )
 
     # ── Model catalogues ───────────────────────────────────────────────────
-
-    def get_text_models(self):
-        return [
-            {"name": "gemini-3.1-flash-lite",  "price": "💰 ~$0.10/1M tok"},
-            {"name": "gemini-3.5-flash",        "price": "⚖️  ~$0.15/1M tok"},
-            {"name": "gemini-3.1-pro",          "price": "🏆 ~$1.25/1M tok"},
-        ]
 
     def get_image_models(self):
         return [
@@ -98,52 +74,6 @@ class GeminiService:
             {"name": "minimax_h3_t2v",     "price": "📝🆕 MiniMax H3 T2V · ~$0.09/s (price unverified)"},
             {"name": "minimax_h3_ref",     "price": "🎭🆕 MiniMax H3 Ref · ~$0.09/s (price unverified)"},
         ]
-
-    # ── Text generation ────────────────────────────────────────────────────
-
-    _IMAGE_MIME_BY_EXT = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png", ".webp": "image/webp",
-    }
-
-    @_retry_cheap
-    async def generate_text(
-        self, prompt: str, system_prompt: str = "", model: str = "gemini-3.1-flash-lite",
-        image_paths: list[str] | None = None,
-    ) -> str:
-        # Callers pass settings.get("text_model") or "" — treat empty as default
-        # so the bot works out of the box without any configuration.
-        model = model or "gemini-3.1-flash-lite"
-        try:
-            parts = []
-            for p in (image_paths or []):
-                mime = self._IMAGE_MIME_BY_EXT.get(os.path.splitext(p)[1].lower(), "image/jpeg")
-                with open(p, "rb") as f:
-                    parts.append(types.Part.from_bytes(data=f.read(), mime_type=mime))
-            parts.append(types.Part(text=prompt))
-            contents = [
-                types.Content(role="user", parts=parts),
-            ]
-            config = types.GenerateContentConfig(system_instruction=system_prompt)
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=model,
-                contents=contents,
-                config=config,
-            )
-            text = getattr(response, "text", None)
-            if not text or not text.strip():
-                candidates = getattr(response, "candidates", None) or []
-                finish_reasons = [getattr(c, "finish_reason", None) for c in candidates]
-                feedback = getattr(response, "prompt_feedback", None)
-                raise Exception(
-                    f"Empty text response from LLM (model={model}, "
-                    f"finish_reasons={finish_reasons}, prompt_feedback={feedback})"
-                )
-            return text
-        except Exception as e:
-            logger.error(f"Error generating text: {e}")
-            raise Exception(f"Failed to generate text: {str(e)}")
 
     # ── Voiceover parsing ──────────────────────────────────────────────────
 

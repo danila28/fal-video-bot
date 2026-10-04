@@ -40,6 +40,7 @@ from services.imagegen import (
     _probe_image_size,
 )
 from services.kling import KlingService
+from services.llm import LLMService
 from utils import container
 from utils.consts import allowed_users, generate_hashtags_prompt
 from utils.presets import DEFAULT_PLOT_PROMPT
@@ -157,14 +158,14 @@ async def handle_generate_button(message: Message, state: FSMContext):
 @router.message(GenerationState.RAW_PROMPT, IsAllowed(allowed_users))
 async def handle_raw_prompt(message: Message, state: FSMContext):
     try:
-        gemini = container.inject(GeminiService)
+        llm = container.inject(LLMService)
         db = container.inject(DBService)
         settings = await db.get_settings(message.from_user.id, message.chat.id)
         system_prompt = _substitute_prompt_vars(
             settings.get("system_plot_prompt") or DEFAULT_PLOT_PROMPT,
             settings
         )
-        enhance_prompt = await gemini.generate_text(
+        enhance_prompt = await llm.generate_text(
             message.text,
             system_prompt,
             settings.get("text_model") or "",
@@ -210,11 +211,12 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
         await state.update_data(generation_in_progress=True, generation_started_at=time.time())
         await message.answer("⏳ Generating video prompt…")
         try:
+            llm = container.inject(LLMService)
             gemini = container.inject(GeminiService)
             text_model = settings.get("text_model") or ""
             video_prompt, hashtags = await asyncio.gather(
-                _build_video_prompt(enhance_prompt, settings, gemini, strict_script=strict),
-                gemini.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
+                _build_video_prompt(enhance_prompt, settings, llm, strict_script=strict),
+                llm.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
             )
             scene, voiceover = _split_video_prompt(video_prompt, gemini)
             parsed_vp = GeminiService.parse_script_json(video_prompt)
@@ -251,10 +253,11 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
         f"⏳ Generating {image_count} image{'s' if image_count > 1 else ''}…"
     )
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
 
-        image_prompt = await _build_image_prompt(enhance_prompt, settings, gemini, strict_script=strict)
+        image_prompt = await _build_image_prompt(enhance_prompt, settings, llm, strict_script=strict)
 
         image_paths = await imagegen.generate_many(
             prompt=image_prompt,
@@ -438,10 +441,11 @@ async def _proceed_to_ref_manual(message: Message, state: FSMContext, user_id: i
     await state.update_data(generation_in_progress=True, generation_started_at=time.time())
 
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
 
-        styled_prompts = await _build_ref_image_prompts(descriptions, settings, gemini, strict_script=strict)
+        styled_prompts = await _build_ref_image_prompts(descriptions, settings, llm, strict_script=strict)
 
         image_paths = await imagegen.generate_from_prompts(
             prompts=styled_prompts,
@@ -489,6 +493,7 @@ async def _proceed_to_ref_auto(message: Message, state: FSMContext, user_id: int
     await state.update_data(generation_in_progress=True, generation_started_at=time.time())
 
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         from utils.presets import DEFAULT_IMAGE_PROMPT, get_image_tag_template, parse_ref_images_auto_json
 
@@ -521,7 +526,7 @@ async def _proceed_to_ref_auto(message: Message, state: FSMContext, user_id: int
         )
 
         text_model = settings.get("text_model") or ""
-        response = await gemini.generate_text(
+        response = await llm.generate_text(
             llm_prompt,
             "You are a creative director. Generate image descriptions that will work well together as reference images.",
             text_model,
@@ -645,6 +650,7 @@ async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
     await state.update_data(generation_in_progress=True, generation_started_at=time.time())
     await callback.message.answer("Creating upgraded prompt...")
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         db = container.inject(DBService)
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
@@ -654,7 +660,7 @@ async def handle_prompt_regenerate(callback: CallbackQuery, state: FSMContext):
             settings.get("system_plot_prompt") or DEFAULT_PLOT_PROMPT,
             settings
         )
-        enhance_prompt = await gemini.generate_text(
+        enhance_prompt = await llm.generate_text(
             raw_prompt,
             system_prompt,
             settings.get("text_model") or "",
@@ -882,6 +888,7 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
     # Regular non-reference image regeneration
     await state.update_data(generation_in_progress=True, generation_started_at=time.time())
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
         image_count = int(settings.get("image_count", 1))
@@ -890,7 +897,7 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
         )
         enhance_prompt = data.get("enhance_prompt", "")
         image_prompt = await _build_image_prompt(
-            enhance_prompt, settings, gemini, strict_script=bool(data.get("own_script"))
+            enhance_prompt, settings, llm, strict_script=bool(data.get("own_script"))
         )
         image_paths = await imagegen.generate_many(
             prompt=image_prompt,
@@ -919,6 +926,7 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_reply_markup(reply_markup=None)
     await state.update_data(generation_in_progress=True, generation_started_at=time.time())
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         db = container.inject(DBService)
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
@@ -935,10 +943,10 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
         text_model = settings.get("text_model") or ""
         video_prompt, hashtags = await asyncio.gather(
             _build_video_prompt(
-                enhance_prompt, settings, gemini, ref_roles=ref_roles, ref_combination_plan=ref_plan,
+                enhance_prompt, settings, llm, ref_roles=ref_roles, ref_combination_plan=ref_plan,
                 ref_descriptions=ref_descriptions, own_photo_paths=own_photo_paths,
             ),
-            gemini.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
+            llm.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
         )
 
         scene, voiceover = _split_video_prompt(video_prompt, gemini)
@@ -998,6 +1006,7 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         db = container.inject(DBService)
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
@@ -1008,7 +1017,7 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
         ref_descriptions = data.get("ref_descriptions") if data.get("ref_mode") == "manual" else None
         own_photo_paths = data.get("image_paths") if data.get("photo_source") == "own" else None
         video_prompt = await _build_video_prompt(
-            data.get("enhance_prompt", ""), settings, gemini,
+            data.get("enhance_prompt", ""), settings, llm,
             strict_script=bool(data.get("own_script")),
             ref_roles=ref_roles, ref_combination_plan=ref_plan, ref_descriptions=ref_descriptions,
             own_photo_paths=own_photo_paths,
@@ -1031,6 +1040,7 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
     try:
+        llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         db = container.inject(DBService)
         settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
@@ -1041,7 +1051,7 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
         ref_descriptions = data.get("ref_descriptions") if data.get("ref_mode") == "manual" else None
         own_photo_paths = data.get("image_paths") if data.get("photo_source") == "own" else None
         video_prompt = await _build_video_prompt(
-            data.get("enhance_prompt", ""), settings, gemini,
+            data.get("enhance_prompt", ""), settings, llm,
             strict_script=bool(data.get("own_script")),
             ref_roles=ref_roles, ref_combination_plan=ref_plan, ref_descriptions=ref_descriptions,
             own_photo_paths=own_photo_paths,

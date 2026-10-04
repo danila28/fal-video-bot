@@ -27,6 +27,7 @@ from bot.keyboards import (
 from bot.states import GenerationState
 from services.db import DBService
 from services.gemini import GeminiService
+from services.llm import LLMService
 from utils import container
 from utils.consts import allowed_users
 from utils.presets import (
@@ -426,14 +427,14 @@ async def settings_timezone(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data == "settings:text_model", IsAllowed(allowed_users))
 async def settings_text_model(callback: CallbackQuery):
     await callback.answer()
-    gemini = container.inject(GeminiService)
+    llm = container.inject(LLMService)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"{m['name']}  |  {m['price']}",
                 callback_data=f"text-model:{m['name']}",
             )]
-            for m in gemini.get_text_models()
+            for m in llm.get_text_models()
         ]
     )
     await callback.message.answer("Choose text model:", reply_markup=keyboard)
@@ -623,10 +624,10 @@ async def handle_custom_niche_input(message: Message, state: FSMContext):
         return
     await message.answer("⏳ Building a style for your niche…")
     try:
-        gemini = container.inject(GeminiService)
+        llm = container.inject(LLMService)
         db = container.inject(DBService)
         settings = await db.get_settings(message.from_user.id, message.chat.id)
-        raw = await gemini.generate_text(
+        raw = await llm.generate_text(
             niche, CUSTOM_NICHE_META_PROMPT, settings.get("text_model") or ""
         )
         parsed = parse_custom_niche_json(raw)
@@ -768,8 +769,16 @@ async def handle_text_model_selected(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
     try:
+        llm = container.inject(LLMService)
         db = container.inject(DBService)
         model = callback.data.split(":", 1)[1]
+
+        # Validate that model exists in available list
+        available_models = {m["name"] for m in llm.get_text_models()}
+        if model not in available_models:
+            await callback.message.answer(f"❌ Model '{model}' is no longer available.")
+            return
+
         await db.update_settings(callback.from_user.id, callback.message.chat.id, {"text_model": model})
         await callback.message.answer(f"✅ Text model: {model}")
     except Exception as e:

@@ -6,9 +6,13 @@ load_dotenv()
 config = {
     "TELEGRAM_TOKEN": os.getenv("TELEGRAM_TOKEN"),
 
+    # OpenAI API key — used for text generation (luna, terra, sol models).
+    "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+
     # Gemini Developer API key — used for text generation and Imagen 4 Fast.
     # `GEMINI_API_KEY` is preferred; `VERTEX_API_KEY` kept as alias so .env
     # files copied from video-gen-bot keep working without edits.
+    # Now optional: at least one of OPENAI_API_KEY or GEMINI_API_KEY must be set.
     "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY") or os.getenv("VERTEX_API_KEY"),
 
     # Atlas Cloud API key — used by all video generation and FLUX/Ideogram image models.
@@ -42,7 +46,6 @@ config = {
 
 _REQUIRED = [
     "TELEGRAM_TOKEN",
-    "GEMINI_API_KEY",
     "ATLAS_API_KEY",
     "CORE_DB_NAME",
     "DB_USERNAME",
@@ -56,6 +59,15 @@ if _missing:
         "Check your .env file."
     )
 
+# At least one LLM provider must be configured (OpenAI or Gemini)
+if not config.get("OPENAI_API_KEY") and not config.get("GEMINI_API_KEY"):
+    raise RuntimeError(
+        "At least one LLM provider must be configured:\n"
+        "  • OPENAI_API_KEY (for luna, terra, sol models)\n"
+        "  • GEMINI_API_KEY (for Gemini models)\n"
+        "Check your .env file."
+    )
+
 # API keys and tokens travel through .env files edited by hand; a copy-paste
 # through a messenger or rich-text editor can silently replace Latin letters
 # with Unicode lookalikes. Such a key *looks* fine but crashes deep inside the
@@ -64,6 +76,7 @@ if _missing:
 # message instead.
 _ASCII_ONLY = [
     "TELEGRAM_TOKEN",
+    "OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "ATLAS_API_KEY",
     "BLOTATO_API_KEY",

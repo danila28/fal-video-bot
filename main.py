@@ -13,6 +13,7 @@ from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
+from services.llm import LLMService, OpenAITextProvider, GeminiTextProvider
 from services.minimax import MiniMaxService
 from services.omni_edit import OmniEditService
 from services.seedance import SeedanceService
@@ -58,7 +59,18 @@ async def main():
     db = DBService(pool=pool, bot_id="fvb")
     container.instance(db)
 
-    container.instance(GeminiService(api_key=config["GEMINI_API_KEY"]))
+    # Initialize LLM service with available providers
+    llm_providers = []
+    if config.get("OPENAI_API_KEY"):
+        llm_providers.append(OpenAITextProvider(api_key=config["OPENAI_API_KEY"]))
+    if config.get("GEMINI_API_KEY"):
+        llm_providers.append(GeminiTextProvider(api_key=config["GEMINI_API_KEY"]))
+
+    container.instance(LLMService(providers=llm_providers, default_model="terra"))
+
+    # GeminiService still needed for image generation and ffmpeg utilities
+    # (only generate_text and get_text_models were moved to LLMService)
+    container.instance(GeminiService(api_key=config.get("GEMINI_API_KEY") or ""))
 
     container.instance(
         ImageGenService(

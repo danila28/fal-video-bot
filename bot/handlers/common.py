@@ -14,6 +14,7 @@ from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
+from services.llm import LLMService
 from services.minimax import MiniMaxService
 from services.seedance import SeedanceService
 from utils import container
@@ -1159,7 +1160,7 @@ _STRICT_SCRIPT_SYS = (
 async def _build_video_prompt(
     enhance_prompt: str,
     settings: dict,
-    gemini: GeminiService,
+    llm: LLMService,
     strict_script: bool = False,
     ref_roles: list[dict] | None = None,
     ref_combination_plan: str = "",
@@ -1174,7 +1175,7 @@ async def _build_video_prompt(
     ref_roles: list of {"index": N, "role": "...", "description": "..."} for auto mode
     ref_combination_plan: how to combine reference images (auto mode)
     ref_descriptions: user-provided descriptions for manual mode
-    own_photo_paths: user-uploaded real photo(s) — passed to Gemini as actual
+    own_photo_paths: user-uploaded real photo(s) — passed to LLM as actual
     image input (vision) instead of a text description, so shots are grounded
     in what the photo(s) actually show rather than invented from enhance_prompt
     alone. Takes priority over ref_roles/ref_descriptions when set.
@@ -1297,7 +1298,7 @@ async def _build_video_prompt(
     )
 
     sys_prompt = (base_sys + ref_images_context + "\n\n" + _JSON_SYS) if base_sys else (_JSON_SYS if not ref_images_context else ref_images_context + "\n\n" + _JSON_SYS)
-    raw = await gemini.generate_text(
+    raw = await llm.generate_text(
         enhance_prompt,
         sys_prompt,
         settings.get("text_model") or "",
@@ -1307,14 +1308,14 @@ async def _build_video_prompt(
     if GeminiService.parse_script_json(raw) is not None:
         return raw  # valid JSON ✓
 
-    logger.warning("Gemini returned invalid JSON for video script — falling back to text format")
+    logger.warning("LLM returned invalid JSON for video script — falling back to text format")
     return await _build_video_prompt_text(
-        enhance_prompt, settings, gemini, strict_script=strict_script, own_photo_paths=own_photo_paths
+        enhance_prompt, settings, llm, strict_script=strict_script, own_photo_paths=own_photo_paths
     )
 
 
 async def _build_video_prompt_text(
-    enhance_prompt: str, settings: dict, gemini: GeminiService, strict_script: bool = False,
+    enhance_prompt: str, settings: dict, llm: LLMService, strict_script: bool = False,
     own_photo_paths: list[str] | None = None,
 ) -> str:
     """Text-format fallback (original implementation)."""
@@ -1378,7 +1379,7 @@ async def _build_video_prompt_text(
         if own_photo_paths else ""
     )
     sys_with_hint = (base_sys + photo_hint + _FORMAT_SUFFIX) if base_sys else (photo_hint + _FORMAT_SUFFIX)
-    return await gemini.generate_text(
+    return await llm.generate_text(
         enhance_prompt,
         sys_with_hint,
         settings.get("text_model") or "",
@@ -1397,7 +1398,7 @@ _STRICT_IMAGE_SYS = (
 async def _build_image_prompt(
     enhance_prompt: str,
     settings: dict,
-    gemini: GeminiService,
+    llm: LLMService,
     strict_script: bool = False,
 ) -> str:
     from utils.presets import DEFAULT_IMAGE_PROMPT, IMAGE_SYS_SUFFIX
@@ -1408,7 +1409,7 @@ async def _build_image_prompt(
         base_sys = _STRICT_IMAGE_SYS
     else:
         base_sys = settings.get("system_image_prompt") or DEFAULT_IMAGE_PROMPT
-    return await gemini.generate_text(
+    return await llm.generate_text(
         enhance_prompt,
         base_sys + IMAGE_SYS_SUFFIX,
         settings.get("text_model") or "",
@@ -1418,7 +1419,7 @@ async def _build_image_prompt(
 async def _build_ref_image_prompts(
     descriptions: list[str],
     settings: dict,
-    gemini: GeminiService,
+    llm: LLMService,
     strict_script: bool = False,
 ) -> list[str]:
     """Turn user-provided per-photo descriptions (reference manual mode) into
@@ -1434,7 +1435,7 @@ async def _build_ref_image_prompts(
         base_sys = settings.get("system_image_prompt") or DEFAULT_IMAGE_PROMPT
     sys_prompt = base_sys + IMAGE_SYS_SUFFIX
     text_model = settings.get("text_model") or ""
-    tasks = [gemini.generate_text(desc, sys_prompt, text_model) for desc in descriptions]
+    tasks = [llm.generate_text(desc, sys_prompt, text_model) for desc in descriptions]
     return list(await asyncio.gather(*tasks))
 
 
