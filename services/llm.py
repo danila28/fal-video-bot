@@ -19,7 +19,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     before_sleep_log,
-    retry_if_exception_type,
+    retry_if_exception,
 )
 
 logger = logging.getLogger(__name__)

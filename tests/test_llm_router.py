@@ -117,4 +117,4 @@ async def test_generate_text_vision_fallback():
 
     # Should have called with "has-vision" model, not "no-vision"
     call_args = provider.generate.call_args
-    assert call_args[1]["model"] == "has-vision"
+    assert call_args[0][2] == "has-vision"
