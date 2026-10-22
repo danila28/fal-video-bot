@@ -5,6 +5,7 @@ import json
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     InlineKeyboardButton,
@@ -14,6 +15,7 @@ from aiogram.types import (
 )
 from bot.guard import IsAllowed
 from bot.keyboards import (
+    VIDEO_SERVICE_TITLES,
     get_accounts_keyboard,
     get_advanced_settings_keyboard,
     get_duration_keyboard,
@@ -22,12 +24,16 @@ from bot.keyboards import (
     get_settings_keyboard,
     get_speed_keyboard,
     get_style_keyboard,
+    get_video_models_keyboard,
+    get_video_service_keyboard,
     SETTINGS_BUTTON_TEXT,
+    video_model_title,
 )
 from bot.states import GenerationState
 from services.db import DBService
 from services.gemini import GeminiService
 from services.llm import LLMService
+from services.pricing import video_provider
 from utils import container
 from utils.config import config
 from utils.consts import allowed_users
@@ -458,26 +464,105 @@ async def settings_image_model(callback: CallbackQuery):
     await callback.message.answer("Choose image model:", reply_markup=keyboard)
 
 
+def _video_catalog() -> dict[str, list[dict]]:
+    """Video menu entries split by service: {'atlas': [...], 'higgsfield': [...]}.
+    Family headers stay in the Atlas list; Higgsfield's single header is dropped."""
+    gemini = container.inject(GeminiService)
+    catalog: dict[str, list[dict]] = {"atlas": [], "higgsfield": []}
+    for entry in gemini.get_video_models():
+        if entry.get("separator"):
+            if "Higgsfield" not in entry["label"]:
+                catalog["atlas"].append(entry)
+        elif video_provider(entry["name"]) == "higgsfield":
+            catalog["higgsfield"].append(entry)
+        else:
+            catalog["atlas"].append(entry)
+    return catalog
+
+
+def _video_model_line(model_key: str) -> str:
+    """'Seedance 2.5 I2V · ☁️ Atlas Cloud' for the current model, or a plain note."""
+    if not model_key:
+        return "<i>not selected</i>"
+    for entries in _video_catalog().values():
+        for entry in entries:
+            if not entry.get("separator") and entry["name"] == model_key:
+                service = VIDEO_SERVICE_TITLES[video_provider(model_key)]
+                return f"<b>{html.escape(video_model_title(entry['price']))}</b> · {service}"
+    return f"<code>{html.escape(model_key)}</code> <i>(not in the menu)</i>"
+
+
+async def _show_video_services(callback: CallbackQuery, s: dict, edit: bool = False):
+    current = s.get("video_model") or ""
+    counts = {
+        key: sum(1 for e in entries if not e.get("separator"))
+        for key, entries in _video_catalog().items()
+    }
+    text = (
+        "🎬 <b>Video model</b>\n"
+        f"Current: {_video_model_line(current)}\n\n"
+        "Choose a service:"
+    )
+    keyboard = get_video_service_keyboard(
+        video_provider(current) if current else "",
+        counts,
+        bool(config.get("HIGGSFIELD_API_KEY")),
+    )
+    if edit:
+        await _edit_or_send(callback, text, keyboard)
+    else:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def _edit_or_send(callback: CallbackQuery, text: str, keyboard: InlineKeyboardMarkup):
+    """Edit the menu in place (no message spam); fall back to a new message if
+    Telegram refuses the edit, e.g. the text is unchanged."""
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    except TelegramBadRequest:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+
 @router.callback_query(lambda c: c.data == "settings:video_model", IsAllowed(allowed_users))
 async def settings_video_model(callback: CallbackQuery):
     await callback.answer()
-    gemini = container.inject(GeminiService)
-    higgsfield_enabled = bool(config.get("HIGGSFIELD_API_KEY"))
-    rows = []
-    for m in gemini.get_video_models():
-        if m.get("separator"):
-            if "Higgsfield" in m["label"] and not higgsfield_enabled:
-                continue
-            rows.append([InlineKeyboardButton(text=m["label"], callback_data="noop")])
-        else:
-            if m["name"].startswith("higgsfield_") and not higgsfield_enabled:
-                continue
-            rows.append([InlineKeyboardButton(
-                text=m["price"],
-                callback_data=f"video-model:{m['name']}",
-            )])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
-    await callback.message.answer("Choose video model:", reply_markup=keyboard)
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    await _show_video_services(callback, s, edit=False)
+
+
+@router.callback_query(lambda c: c.data == "vsvc:back", IsAllowed(allowed_users))
+async def settings_video_back(callback: CallbackQuery):
+    await callback.answer()
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    await _show_video_services(callback, s, edit=True)
+
+
+@router.callback_query(
+    lambda c: c.data in ("vsvc:atlas", "vsvc:higgsfield"), IsAllowed(allowed_users),
+)
+async def settings_video_service(callback: CallbackQuery):
+    service = callback.data.split(":", 1)[1]
+    catalog = _video_catalog()
+    if service == "higgsfield" and not config.get("HIGGSFIELD_API_KEY"):
+        await callback.answer("Higgsfield is not configured (no API key).", show_alert=True)
+        return
+    await callback.answer()
+
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    current = s.get("video_model") or ""
+    if service == "atlas":
+        note = "Prices are per second, estimates not yet verified."
+    else:
+        note = "Higgsfield does not publish a price per second here, so no cost is shown."
+    text = (
+        f"{VIDEO_SERVICE_TITLES[service]}\n"
+        f"Current: {_video_model_line(current)}\n\n"
+        f"{note}\nPick a model:"
+    )
+    await _edit_or_send(callback, text, get_video_models_keyboard(catalog[service], current))
 
 
 @router.callback_query(lambda c: c.data == "settings:plot_prompt", IsAllowed(allowed_users))
@@ -511,16 +596,13 @@ async def settings_image_prompt(callback: CallbackQuery, state: FSMContext):
 # ─────────────────────────────────────────────
 
 def _video_model_label(model_key: str) -> str:
-    """Human-readable label for a video_model settings key."""
-    from services.kling import MODEL_LABELS as _KLING_LABELS
-    from services.minimax import MODEL_LABELS as _MINIMAX_LABELS
-    from services.seedance import MODEL_LABELS as _SEEDANCE_LABELS
-    return (
-        _KLING_LABELS.get(model_key)
-        or _SEEDANCE_LABELS.get(model_key)
-        or _MINIMAX_LABELS.get(model_key)
-        or model_key
-    )
+    """Plain 'Title · Service' for a video_model key, as shown in messages."""
+    for entries in _video_catalog().values():
+        for entry in entries:
+            if not entry.get("separator") and entry["name"] == model_key:
+                service = VIDEO_SERVICE_TITLES[video_provider(model_key)]
+                return f"{video_model_title(entry['price'])} · {service}"
+    return model_key
 
 
 async def _show_style_menu(callback: CallbackQuery):
@@ -811,15 +893,30 @@ async def handle_noop(callback: CallbackQuery):
 
 @router.callback_query(lambda c: c.data.startswith("video-model:"), IsAllowed(allowed_users))
 async def handle_video_model_selected(callback: CallbackQuery):
+    model = callback.data.split(":", 1)[1]
+    known = {e["name"] for entries in _video_catalog().values() for e in entries if not e.get("separator")}
+    if model not in known:
+        await callback.answer("This model is no longer in the menu.", show_alert=True)
+        return
+    if video_provider(model) == "higgsfield" and not config.get("HIGGSFIELD_API_KEY"):
+        await callback.answer("Higgsfield is not configured (no API key).", show_alert=True)
+        return
     await callback.answer()
-    await callback.message.edit_reply_markup(reply_markup=None)
     try:
         db = container.inject(DBService)
-        model = callback.data.split(":", 1)[1]
         await db.update_settings(callback.from_user.id, callback.message.chat.id, {"video_model": model})
-        await callback.message.answer(f"✅ Video model: {model}")
     except Exception as e:
-        await callback.message.answer(f"Error: {str(e)}")
+        await callback.message.answer(f"Error: {html.escape(str(e))}")
+        return
+
+    # Stay on the same service list: move the check mark and confirm the choice.
+    service = video_provider(model)
+    entries = _video_catalog()[service]
+    text = (
+        f"{VIDEO_SERVICE_TITLES[service]}\n"
+        f"✅ Selected: {_video_model_line(model)}"
+    )
+    await _edit_or_send(callback, text, get_video_models_keyboard(entries, model))
 
 
 # ─────────────────────────────────────────────

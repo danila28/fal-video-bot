@@ -1,3 +1,5 @@
+import re
+
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -131,6 +133,58 @@ def get_publish_keyboard():
             [InlineKeyboardButton(text="cancel", callback_data="cancel")],
         ]
     )
+
+
+VIDEO_SERVICE_TITLES = {
+    "atlas": "☁️ Atlas Cloud",
+    "higgsfield": "🟣 Higgsfield",
+}
+
+
+def video_model_title(price_label: str) -> str:
+    """Short model name for messages: '🖼🆕 Seedance 2.5 I2V · ~$0.09/s (…)' -> 'Seedance 2.5 I2V'."""
+    stripped = re.sub(r"^[^\w]+", "", price_label or "")
+    return stripped.split(" · ")[0].strip()
+
+
+def video_model_price(price_label: str) -> str:
+    """Price part of a menu label: '… · ~$0.09/s (price unverified)' -> '~$0.09/s (price unverified)'."""
+    parts = (price_label or "").split(" · ", 1)
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
+def get_video_service_keyboard(current_service: str, counts: dict[str, int], higgsfield_enabled: bool):
+    """Level 1: pick the service. The service of the current model gets a check mark."""
+    rows = []
+    for key in ("atlas", "higgsfield"):
+        if key == "higgsfield" and not higgsfield_enabled:
+            rows.append([InlineKeyboardButton(
+                text="🟣 Higgsfield · not configured (no API key)",
+                callback_data="noop",
+            )])
+            continue
+        mark = "✅ " if key == current_service else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{VIDEO_SERVICE_TITLES[key]} · {counts.get(key, 0)} models",
+            callback_data=f"vsvc:{key}",
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_video_models_keyboard(entries: list[dict], current_model: str):
+    """Level 2: models of one service. Family headers are non-clickable rows."""
+    rows = []
+    for entry in entries:
+        if entry.get("separator"):
+            rows.append([InlineKeyboardButton(text=entry["label"], callback_data="noop")])
+            continue
+        mark = "✅ " if entry["name"] == current_model else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{entry['price']}",
+            callback_data=f"video-model:{entry['name']}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Back to services", callback_data="vsvc:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_account_picker_keyboard(accounts: list[dict], selected: set[int]):
