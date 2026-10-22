@@ -11,9 +11,10 @@ from services.blotato import BlotatoService
 from services.db import DBService
 from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
+from services.higgsfield import HiggsfieldService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
-from services.llm import LLMService, OpenAITextProvider, GeminiTextProvider
+from services.llm import LLMService, OpenAITextProvider, GeminiTextProvider, AnthropicTextProvider
 from services.minimax import MiniMaxService
 from services.omni_edit import OmniEditService
 from services.seedance import SeedanceService
@@ -65,6 +66,8 @@ async def main():
         llm_providers.append(OpenAITextProvider(api_key=config["OPENAI_API_KEY"]))
     if config.get("GEMINI_API_KEY"):
         llm_providers.append(GeminiTextProvider(api_key=config["GEMINI_API_KEY"]))
+    if config.get("ANTHROPIC_API_KEY"):
+        llm_providers.append(AnthropicTextProvider(api_key=config["ANTHROPIC_API_KEY"]))
 
     container.instance(LLMService(providers=llm_providers, default_model="terra"))
 
@@ -79,6 +82,8 @@ async def main():
         )
     )
     container.instance(KlingService(api_key=config["ATLAS_API_KEY"]))
+    if config.get("HIGGSFIELD_API_KEY"):
+        container.instance(HiggsfieldService(api_key=config["HIGGSFIELD_API_KEY"]))
     container.instance(SeedanceService(api_key=config["ATLAS_API_KEY"]))
     container.instance(MiniMaxService(api_key=config["ATLAS_API_KEY"]))
     container.instance(OmniEditService(api_key=config["ATLAS_API_KEY"]))

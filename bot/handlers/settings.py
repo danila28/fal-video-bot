@@ -29,6 +29,7 @@ from services.db import DBService
 from services.gemini import GeminiService
 from services.llm import LLMService
 from utils import container
+from utils.config import config
 from utils.consts import allowed_users
 from utils.presets import (
     CUSTOM_NICHE_META_PROMPT,
@@ -461,11 +462,16 @@ async def settings_image_model(callback: CallbackQuery):
 async def settings_video_model(callback: CallbackQuery):
     await callback.answer()
     gemini = container.inject(GeminiService)
+    higgsfield_enabled = bool(config.get("HIGGSFIELD_API_KEY"))
     rows = []
     for m in gemini.get_video_models():
         if m.get("separator"):
+            if "Higgsfield" in m["label"] and not higgsfield_enabled:
+                continue
             rows.append([InlineKeyboardButton(text=m["label"], callback_data="noop")])
         else:
+            if m["name"].startswith("higgsfield_") and not higgsfield_enabled:
+                continue
             rows.append([InlineKeyboardButton(
                 text=m["price"],
                 callback_data=f"video-model:{m['name']}",

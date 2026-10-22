@@ -133,6 +133,22 @@ def get_publish_keyboard():
     )
 
 
+def get_account_picker_keyboard(accounts: list[dict], selected: set[int]):
+    """One toggle button per chat account; nothing is pre-selected, so a video
+    is never sent to every account by accident."""
+    rows = []
+    for acc in accounts:
+        mark = "✅" if acc["id"] in selected else "⬜"
+        name = acc.get("label") or acc["account_id"]
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} {acc['platform']}: {name}",
+            callback_data=f"pubacc:toggle:{acc['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="➡️ Next", callback_data="pubacc:next")])
+    rows.append([InlineKeyboardButton(text="✖️ Cancel", callback_data="pubacc:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def get_resolution_keyboard(current: str = "720p"):
     options = [
         ("480p",  "480p — Seedance only, cheapest/lowest quality"),

@@ -18,6 +18,14 @@ config = {
     # Atlas Cloud API key — used by all video generation and FLUX/Ideogram image models.
     "ATLAS_API_KEY": os.getenv("ATLAS_API_KEY"),
 
+    # Optional. Claude final script review (after the Gemini draft). The bot works
+    # without it: the Gemini draft is used as-is.
+    "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
+
+    # Optional. Higgsfield video models (Seedance / Kling / MiniMax via Higgsfield).
+    # Without it the Higgsfield entries are hidden from the video model menu.
+    "HIGGSFIELD_API_KEY": os.getenv("HIGGSFIELD_API_KEY"),
+
     # PostgreSQL — shared with video-gen-bot. user_settings / chat_accounts /
     # video_history / generation_log / fsm_states tables are co-tenant by
     # (chat_id, user_id), so two bots can safely share the same database as
@@ -78,6 +86,8 @@ _ASCII_ONLY = [
     "TELEGRAM_TOKEN",
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "HIGGSFIELD_API_KEY",
     "ATLAS_API_KEY",
     "BLOTATO_API_KEY",
     "ELEVENLABS_API_KEY",

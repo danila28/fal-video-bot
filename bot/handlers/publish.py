@@ -1,5 +1,6 @@
 """Publish flow: title → schedule/now → Blotato upload."""
 
+import asyncio
 import html
 import logging
 import os
@@ -9,11 +10,10 @@ from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from bot.guard import IsAllowed
-from bot.keyboards import get_publish_keyboard, get_publish_time_keyboard
+from bot.keyboards import get_account_picker_keyboard, get_publish_time_keyboard
 from bot.states import GenerationState
 from services.blotato import BlotatoService
 from services.db import DBService
-from services.gemini import GeminiService
 from services.llm import LLMService
 from utils import container
 from utils.consts import allowed_users, get_hashtags_prompt_for_platforms
@@ -21,6 +21,102 @@ from bot.handlers.common import _is_generating
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+# Blotato reports 'published' only after the platform accepts the post, which
+# can take minutes. Poll for the public link in the background instead of
+# blocking the publish flow.
+_PUB_POLL_INTERVAL = 20   # seconds between status checks
+_PUB_POLL_ATTEMPTS = 30   # ~10 minutes total
+_pub_tasks: set[asyncio.Task] = set()
+
+
+def _account_label(acc: dict) -> str:
+    return acc.get("label") or acc["account_id"]
+
+
+async def _record_publications(
+    msg: Message, user_id: int, chat_accounts: list[dict], results: list, scheduled_at: str,
+) -> list[str]:
+    """Store one publications row per selected account and build the summary.
+
+    Blotato's result for each account is tagged with 'account' = "platform:id"
+    (see BlotatoService.publish_video). The post itself already exists at this
+    point, so a bookkeeping failure is logged and never reported as a failed post.
+    """
+    db = container.inject(DBService)
+    by_pair = {f"{a['platform']}:{a['account_id']}": a for a in chat_accounts}
+    lines: list[str] = []
+    for res in results:
+        acc = by_pair.get(res.get("account"))
+        if acc is None:
+            continue
+        name = html.escape(f"{acc['platform']} · {_account_label(acc)}")
+        if "error" in res:
+            lines.append(f"❌ {name}: {html.escape(str(res['error'])[:200])}")
+            try:
+                await db.add_publication(
+                    msg.chat.id, user_id, acc["id"], acc["platform"], None, "failed", res["error"],
+                )
+            except Exception:
+                logger.exception("Could not record failed publication")
+            continue
+
+        sub_id = res.get("postSubmissionId")
+        status = "scheduled" if scheduled_at else "submitted"
+        try:
+            pub_id = await db.add_publication(
+                msg.chat.id, user_id, acc["id"], acc["platform"], sub_id, status,
+            )
+        except Exception:
+            logger.exception("Could not record publication")
+            pub_id = None
+
+        lines.append(f"✅ {name}" + (" — scheduled" if scheduled_at else " — sent, waiting for link"))
+        if sub_id and pub_id and not scheduled_at:
+            task = asyncio.create_task(
+                _track_publication(msg, pub_id, sub_id, acc["platform"])
+            )
+            _pub_tasks.add(task)
+            task.add_done_callback(_pub_tasks.discard)
+    return lines
+
+
+async def _track_publication(msg: Message, pub_id: int, sub_id: str, platform: str) -> None:
+    """Poll Blotato until the post is published or failed, then tell the chat the link."""
+    blotato = container.inject(BlotatoService)
+    db = container.inject(DBService)
+    last_error = ""
+    for _ in range(_PUB_POLL_ATTEMPTS):
+        await asyncio.sleep(_PUB_POLL_INTERVAL)
+        try:
+            info = await blotato.get_post_status(sub_id)
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"Blotato status poll failed ({sub_id}): {e}")
+            continue
+
+        status = info.get("status")
+        if status == "published":
+            url = info.get("publicUrl")
+            await db.update_publication(pub_id, "published" if url else "url_missing", public_url=url)
+            if url:
+                await msg.answer(f"🔗 {html.escape(platform)}: {html.escape(url)}")
+            else:
+                await msg.answer(f"✅ {html.escape(platform)} published (Blotato returned no link).")
+            return
+        if status == "failed":
+            err = info.get("errorMessage") or "publish failed"
+            await db.update_publication(pub_id, "failed", error_text=err)
+            await msg.answer(f"❌ {html.escape(platform)}: {html.escape(err[:300])}")
+            return
+
+    await db.update_publication(
+        pub_id, "url_missing", error_text=last_error or "still in progress after polling window",
+    )
+    await msg.answer(
+        f"⏳ {html.escape(platform)}: no link yet after 10 minutes. "
+        "The post may still be processing."
+    )
 
 
 # ─────────────────────────────────────────────
@@ -58,12 +154,14 @@ async def _do_publish(msg: Message, user_id: int, state: FSMContext, scheduled_a
         settings = await db.get_settings(user_id, msg.chat.id)
         text_model = settings.get("text_model") or ""
 
-        chat_accounts = await db.get_chat_accounts(msg.chat.id)
+        # Publish only to accounts the user explicitly picked (SELECT_PUBLISH_ACCOUNTS).
+        selected_ids = set(data.get("publish_account_ids") or [])
+        chat_accounts = [
+            acc for acc in await db.get_chat_accounts(msg.chat.id)
+            if acc["id"] in selected_ids
+        ]
         if not chat_accounts:
-            raise Exception(
-                "No accounts configured for this chat.\n"
-                "Go to ⚙️ Settings → 📤 Accounts and add at least one account."
-            )
+            raise Exception("No accounts selected for publishing.")
         accounts = ",".join(
             f"{acc['platform']}:{acc['account_id']}" for acc in chat_accounts
         )
@@ -82,17 +180,21 @@ async def _do_publish(msg: Message, user_id: int, state: FSMContext, scheduled_a
             logger.warning(f"Hashtag generation failed, using cached: {ht_err}")
             hashtags = data.get("cached_hashtags") or ""
 
-        await blotato.publish_video(
+        results = await blotato.publish_video(
             video_path=video_path,
             title=f"{title} {hashtags}",
             accounts=accounts,
             scheduled_at=scheduled_at,
         )
 
+        lines = await _record_publications(msg, user_id, chat_accounts, results, scheduled_at)
+        if not lines:
+            # Blotato answered, but none of its results matched a selected account.
+            # The post request was sent, so do not report it as a failure.
+            lines = ["ℹ️ Publish request sent, but no per-account result came back."]
         if scheduled_at:
-            await msg.answer(f"✅ Scheduled for <b>{scheduled_at} UTC</b>!", parse_mode="HTML")
-        else:
-            await msg.answer("✅ Published successfully!")
+            lines.insert(0, f"📅 Scheduled for <b>{scheduled_at} UTC</b>:")
+        await msg.answer("\n".join(lines), parse_mode="HTML")
         await state.clear()
 
     except Exception as e:
@@ -108,8 +210,70 @@ async def _do_publish(msg: Message, user_id: int, state: FSMContext, scheduled_a
 async def handle_publish(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
+    db = container.inject(DBService)
+    accounts = await db.get_chat_accounts(callback.message.chat.id)
+    if not accounts:
+        await callback.message.answer(
+            "No accounts configured for this chat.\n"
+            "Go to ⚙️ Settings → 📤 Accounts and add at least one account."
+        )
+        return
+    await state.update_data(publish_account_ids=[])
+    await callback.message.answer(
+        "Select the accounts to publish to:",
+        reply_markup=get_account_picker_keyboard(accounts, set()),
+    )
+    await state.set_state(GenerationState.SELECT_PUBLISH_ACCOUNTS)
+
+
+@router.callback_query(
+    GenerationState.SELECT_PUBLISH_ACCOUNTS,
+    lambda c: c.data.startswith("pubacc:toggle:"),
+    IsAllowed(allowed_users),
+)
+async def handle_publish_account_toggle(callback: CallbackQuery, state: FSMContext):
+    db = container.inject(DBService)
+    accounts = await db.get_chat_accounts(callback.message.chat.id)
+    row_id = int(callback.data.rsplit(":", 1)[1])
+    if row_id not in {acc["id"] for acc in accounts}:
+        await callback.answer("This account is not configured for this chat.", show_alert=True)
+        return
+    data = await state.get_data()
+    selected = set(data.get("publish_account_ids") or [])
+    selected ^= {row_id}
+    await state.update_data(publish_account_ids=sorted(selected))
+    await callback.answer()
+    await callback.message.edit_reply_markup(
+        reply_markup=get_account_picker_keyboard(accounts, selected)
+    )
+
+
+@router.callback_query(
+    GenerationState.SELECT_PUBLISH_ACCOUNTS,
+    lambda c: c.data == "pubacc:next",
+    IsAllowed(allowed_users),
+)
+async def handle_publish_accounts_next(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("publish_account_ids"):
+        await callback.answer("Select at least one account.", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer("Send video title:")
     await state.set_state(GenerationState.SET_VIDEO_TITLE)
+
+
+@router.callback_query(
+    GenerationState.SELECT_PUBLISH_ACCOUNTS,
+    lambda c: c.data == "pubacc:cancel",
+    IsAllowed(allowed_users),
+)
+async def handle_publish_accounts_cancel(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer("Canceled.")
+    await state.clear()
 
 
 @router.message(GenerationState.SET_VIDEO_TITLE, IsAllowed(allowed_users))

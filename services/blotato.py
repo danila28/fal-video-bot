@@ -211,10 +211,25 @@ class BlotatoService:
                     scheduled_at=scheduled_at,
                 )
 
-                results.append(result)
+                # Tag the success with its account so the caller can map each
+                # postSubmissionId back to the chat_accounts row it was sent to.
+                results.append({"account": pair, **result})
 
             except Exception as e:
                 logger.error(f"Failed for {pair}: {e}")
                 results.append({"account": pair, "error": str(e)})
 
         return results
+
+    async def get_post_status(self, post_submission_id: str) -> dict:
+        """GET /posts/{postSubmissionId}. Returns the raw JSON: 'status' is one of
+        in-progress | scheduled | published | failed; 'publicUrl' appears once
+        the post is live (documented as optional)."""
+        url = f"{self.base_url}/posts/{post_submission_id}"
+        headers = {"blotato-api-key": self.api_key}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                text = await resp.text()
+                if resp.status >= 400:
+                    raise Exception(f"Blotato post status error {resp.status}: {text}")
+                return await resp.json()

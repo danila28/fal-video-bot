@@ -156,6 +156,87 @@ class DBService:
             )
 
     # ─────────────────────────────────────────────
+    # COST LEDGER (migration 011)
+    # ─────────────────────────────────────────────
+
+    async def log_cost(
+        self,
+        chat_id: int,
+        user_id: int,
+        provider: str,
+        model: str,
+        kind: str,
+        seconds: float | None = None,
+        est_usd: float | None = None,
+        price_verified: bool = False,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+    ) -> None:
+        """Record one paid provider call. Non-fatal: a DB hiccup must never
+        interrupt a generation that has already been paid for."""
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO cost_ledger
+                        (bot_id, chat_id, user_id, provider, model, kind, seconds,
+                         est_usd, price_verified, input_tokens, output_tokens)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    """,
+                    self.bot_id, chat_id, user_id, provider, model, kind,
+                    seconds, est_usd, price_verified, input_tokens, output_tokens,
+                )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("log_cost failed (non-fatal)", exc_info=True)
+
+    # ─────────────────────────────────────────────
+    # PUBLICATIONS (migration 011)
+    # ─────────────────────────────────────────────
+
+    async def add_publication(
+        self,
+        chat_id: int,
+        user_id: int,
+        account_row_id: int,
+        platform: str,
+        post_submission_id: str | None,
+        status: str,
+        error_text: str | None = None,
+    ) -> int:
+        """Insert one publication row and return its id."""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO publications
+                    (bot_id, chat_id, user_id, account_row_id, platform,
+                     post_submission_id, status, error_text)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id
+                """,
+                self.bot_id, chat_id, user_id, account_row_id, platform,
+                post_submission_id, status, error_text,
+            )
+
+    async def update_publication(
+        self,
+        publication_id: int,
+        status: str,
+        public_url: str | None = None,
+        error_text: str | None = None,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE publications
+                   SET status=$2, public_url=COALESCE($3, public_url),
+                       error_text=$4, updated_at=NOW()
+                 WHERE id=$1
+                """,
+                publication_id, status, public_url, error_text,
+            )
+
+    # ─────────────────────────────────────────────
     # VIDEO HISTORY
     # ─────────────────────────────────────────────
 

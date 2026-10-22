@@ -58,8 +58,10 @@ from bot.handlers.common import (
     _show_video_prompt,
     _split_video_prompt,
     _substitute_prompt_vars,
+    _video_cost_line,
     generate_video_for_model,
 )
+from services.pricing import estimate_video_usd, video_provider
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -228,7 +230,7 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
                 video_script_json=video_prompt,
                 cached_hashtags=hashtags,
             )
-            text = _format_video_prompt_message(scene, voiceover)
+            text = _format_video_prompt_message(scene, voiceover, _video_cost_line(settings))
             await send_long_message(
                 message, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML"
             )
@@ -960,7 +962,7 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
             cached_hashtags=hashtags,
         )
 
-        text = _format_video_prompt_message(scene, voiceover)
+        text = _format_video_prompt_message(scene, voiceover, _video_cost_line(settings))
         await send_long_message(
             callback.message, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML"
         )
@@ -1025,7 +1027,7 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
         new_scene, _ = _split_video_prompt(video_prompt, gemini)
         voiceover = data.get("video_voiceover", "")
         await state.update_data(video_scene=new_scene, video_script_json=video_prompt)
-        await _show_video_prompt(callback.message, new_scene, voiceover)
+        await _show_video_prompt(callback.message, new_scene, voiceover, settings)
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
@@ -1059,7 +1061,7 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
         _, new_voiceover = _split_video_prompt(video_prompt, gemini)
         scene = data.get("video_scene", "")
         await state.update_data(video_voiceover=new_voiceover, video_script_json=video_prompt)
-        await _show_video_prompt(callback.message, scene, new_voiceover)
+        await _show_video_prompt(callback.message, scene, new_voiceover, settings)
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
@@ -1086,7 +1088,9 @@ async def handle_vp_scene_edit(callback: CallbackQuery, state: FSMContext):
 async def handle_edit_scene_input(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.update_data(video_scene=message.text, video_script_json=None)
-    await _show_video_prompt(message, message.text, data.get("video_voiceover", ""))
+    db = container.inject(DBService)
+    settings = await db.get_settings(message.from_user.id, message.chat.id)
+    await _show_video_prompt(message, message.text, data.get("video_voiceover", ""), settings)
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
 
 
@@ -1111,7 +1115,9 @@ async def handle_vp_vo_edit(callback: CallbackQuery, state: FSMContext):
 async def handle_edit_voiceover_input(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.update_data(video_voiceover=message.text)
-    await _show_video_prompt(message, data.get("video_scene", ""), message.text)
+    db = container.inject(DBService)
+    settings = await db.get_settings(message.from_user.id, message.chat.id)
+    await _show_video_prompt(message, data.get("video_scene", ""), message.text, settings)
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
 
 
@@ -1204,6 +1210,14 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             user_id=user_id, chat_id=chat_id, gen_type=gen_type,
             video_model=settings.get("video_model") or "",
             target_duration=settings.get("target_duration", DEFAULT_TARGET_DURATION),
+        )
+        video_model = settings.get("video_model") or ""
+        video_seconds = float(settings.get("target_duration", DEFAULT_TARGET_DURATION))
+        await db.log_cost(
+            chat_id=chat_id, user_id=user_id,
+            provider=video_provider(video_model), model=video_model, kind="video",
+            seconds=video_seconds, est_usd=estimate_video_usd(video_model, video_seconds),
+            price_verified=False,
         )
         if sent_msg.video:
             history_title = (video_scene or video_voiceover or data.get("enhance_prompt") or "")[:120]

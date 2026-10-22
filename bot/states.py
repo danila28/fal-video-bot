@@ -47,6 +47,7 @@ class GenerationState(StatesGroup):
     CONFIRM_VIDEO = State()
     VIDEO_EDIT_PROMPT = State()
     CONFIRM_PUBLISH = State()
+    SELECT_PUBLISH_ACCOUNTS = State()
     SET_VIDEO_TITLE = State()
     SELECT_PUBLISH_TIME = State()
     SET_PUBLISH_TIME = State()

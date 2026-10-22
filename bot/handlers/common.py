@@ -10,15 +10,18 @@ import re
 
 from aiogram.fsm.context import FSMContext
 from bot.keyboards import get_video_prompt_keyboard
+from services.db import DBService
 from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
 from services.kling import KlingService
 from services.llm import LLMService
+from services.pricing import format_video_cost_line
 from services.minimax import MiniMaxService
 from services.seedance import SeedanceService
 from utils import container
 from utils.config import config
+from utils.job_context import current_owner
 from utils.tg import send_long_message
 
 _SFX_SCENE_CHARS = 200
@@ -234,6 +237,10 @@ async def generate_video_for_model(
     if shots:
         if model.startswith("kling"):
             min_dur, max_dur = _kling_min_clip_duration(model), _kling_max_clip_duration(model)
+        elif model.startswith("higgsfield_"):
+            from services.higgsfield import HF_MODELS as _HF_MODELS
+            hf_spec = _HF_MODELS.get(model)
+            min_dur, max_dur = (hf_spec.min_dur, hf_spec.max_dur) if hf_spec else (4, 15)
         else:
             min_dur, max_dur = 4, 15
         target = settings.get("target_duration", DEFAULT_TARGET_DURATION)
@@ -242,6 +249,12 @@ async def generate_video_for_model(
     # Prefix routing: any kling_* goes to Kling, any minimax_* goes to MiniMax
     # (unknown/removed variants fall back to the tier default inside each
     # function), everything else — to Seedance (default).
+    if model.startswith("higgsfield_"):
+        return await _generate_higgsfield(
+            gemini=gemini, settings=settings,
+            video_prompt=video_prompt, voiceover_text=voiceover_text,
+            image_paths=image_paths, notify=notify, shots=shots,
+        )
     if model.startswith("kling"):
         return await _generate_kling(
             gemini=gemini, settings=settings,
@@ -915,6 +928,96 @@ async def _generate_kling(
 
 
 
+async def _generate_higgsfield(
+    *,
+    gemini: GeminiService,
+    settings: dict,
+    video_prompt: str,
+    voiceover_text: str,
+    image_paths: list[str] | None,
+    notify,
+    shots: list[dict] | None = None,
+) -> dict:
+    """Higgsfield-hosted models: one request per clip. Image-to-video clips are
+    chained through the last frame of the previous clip; the reference model
+    sends all photos with every clip. Clips are concatenated at the end."""
+    from services.higgsfield import HF_MODELS, HiggsfieldService
+
+    model = (settings.get("video_model") or "").lower()
+    spec = HF_MODELS[model]
+    try:
+        hf = container.inject(HiggsfieldService)
+    except KeyError:
+        raise RuntimeError("HIGGSFIELD_API_KEY is not set. Add it to .env or choose another model.")
+    kling = container.inject(KlingService)  # public photo URLs come from the Atlas upload
+
+    valid_paths = [p for p in (image_paths or []) if os.path.exists(p)]
+    if not valid_paths:
+        raise RuntimeError(f"{spec.label} needs a reference photo, but none was found.")
+
+    target_duration = int(settings.get("target_duration", DEFAULT_TARGET_DURATION))
+    if shots:
+        scenes = [_build_shot_prompt(s) for s in shots]
+        durations = [
+            int(max(spec.min_dur, min(spec.max_dur, s.get("duration_seconds", spec.max_dur))))
+            for s in shots
+        ]
+    else:
+        durations = _plan_clip_durations(target_duration, min_dur=spec.min_dur, max_dur=spec.max_dur)
+        scenes = _split_scene_into_shots(video_prompt, len(durations))
+
+    resolution = settings.get("video_resolution", "720p")
+    use_sound = spec.has_audio and (
+        settings.get("content_preset") == "asmr" or not (voiceover_text or "").strip()
+    )
+
+    if spec.reference:
+        image_urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
+    else:
+        image_urls = [await kling.upload_photo(valid_paths[0])]
+
+    await notify(f"⏱ Generating <b>{spec.label}</b> ({len(durations)} clip(s))…")
+    clips: list[str] = []
+    for i, (scene, dur) in enumerate(zip(scenes, durations)):
+        await notify(f"🎞 {spec.label} clip {i + 1}/{len(durations)}…")
+        clip = await hf.generate_clip(
+            model,
+            prompt=scene,
+            duration=dur,
+            image_urls=image_urls,
+            resolution=resolution,
+            sound=use_sound,
+        )
+        clips.append(clip)
+        if not spec.reference and i < len(durations) - 1:
+            frame_path = await gemini.extract_last_frame(clip)
+            if frame_path:
+                try:
+                    new_url = await kling.upload_photo(frame_path)
+                    if new_url:
+                        image_urls = [new_url]
+                finally:
+                    try:
+                        os.remove(frame_path)
+                    except OSError:
+                        pass
+
+    raw_video = (
+        await gemini.concat_videos(clips, crossfade=0.5, transitions=None)
+        if len(clips) > 1 else clips[0]
+    )
+    await notify(f"✅ {spec.label} clips ready")
+
+    tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
+    return {
+        "raw_video_path": raw_video,
+        "tts_audio_path": tts_audio_path,
+        "word_timings": word_timings,
+        "voiceover_text": voiceover_text,
+        "has_native_audio": use_sound,
+    }
+
+
 # ── Shared TTS helper ────────────────────────────────────────────────────────
 
 async def _synthesize_tts(
@@ -1157,6 +1260,93 @@ _STRICT_SCRIPT_SYS = (
 )
 
 
+# ── Claude final pass (runs once, after the Gemini draft) ─────────────────────
+#
+# Gemini writes the cheap draft; Claude reviews it before the operator sees the
+# confirmation screen, so weak scripts are caught before the expensive render.
+# Any failure (no key, API error, refusal, broken output, hard-rule violation)
+# keeps the Gemini draft, so the flow never blocks on this step.
+
+_FINAL_PASS_MODEL = "claude-opus-5-5"
+_FINAL_PASS_SYS = (
+    "You are the final editor of a short-form vertical video script. A cheaper model "
+    "wrote the draft. Review it for: plot, a strong hook in the first shot (it must "
+    "grab attention in about 2 seconds), logical flow from shot to shot, and total duration.\n"
+    "Fix what is weak. Keep the exact same JSON schema, and keep the same number of shots "
+    "in the same order. You may rewrite spoken_text, caption and the wording of scene_prompt. "
+    "Keep each shot's subject and camera_motion consistent with the draft.\n"
+    "Each duration_seconds must be an integer from 4 to 15, and their sum must equal the "
+    "target duration within 2 seconds.\n"
+    "Do not add products, brands, claims or people that are not in the draft.\n"
+    "Reply with the corrected JSON object only: no markdown fences, no commentary."
+)
+
+
+def _validate_final_script(draft_text: str, polished_text: str, target_seconds: int) -> str | None:
+    """Return the polished script as JSON if it passes every hard rule, else None."""
+    draft = GeminiService.parse_script_json(draft_text)
+    polished = GeminiService.parse_script_json(polished_text)
+    if draft is None or polished is None:
+        return None
+    d_shots = draft.get("shots") or []
+    p_shots = polished.get("shots") or []
+    if not p_shots or len(p_shots) != len(d_shots):
+        return None
+    total = 0.0
+    for shot in p_shots:
+        dur = shot.get("duration_seconds")
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not (4 <= dur <= 15):
+            return None
+        if not str(shot.get("scene_prompt") or "").strip():
+            return None
+        total += dur
+    if abs(total - target_seconds) > 2:
+        return None
+    return _json.dumps(polished, ensure_ascii=False)
+
+
+async def _final_pass_script(draft_text: str, settings: dict) -> str:
+    """Claude review of a Gemini script draft. Returns the corrected JSON, or the
+    draft unchanged when Claude is unavailable or the result breaks a hard rule."""
+    if (settings.get("text_model") or "").startswith("claude"):
+        return draft_text  # the draft was already written by Claude
+    llm = container.inject(LLMService)
+    provider = llm.providers_map.get("anthropic")
+    if provider is None:  # ANTHROPIC_API_KEY not set
+        return draft_text
+
+    target = int(settings.get("target_duration", DEFAULT_TARGET_DURATION))
+    user_prompt = f"Target total duration: {target} seconds.\n\nDraft JSON:\n{draft_text}"
+    try:
+        polished_text, usage = await provider.generate_with_usage(
+            user_prompt, _FINAL_PASS_SYS, _FINAL_PASS_MODEL,
+        )
+    except Exception as e:
+        logger.warning(f"Claude final pass failed, keeping Gemini draft: {e}")
+        return draft_text
+
+    await _log_claude_usage(usage)
+    checked = _validate_final_script(draft_text, polished_text, target)
+    if checked is None:
+        logger.warning("Claude final pass broke a hard rule, keeping Gemini draft")
+        return draft_text
+    logger.info("Claude final pass applied")
+    return checked
+
+
+async def _log_claude_usage(usage: dict) -> None:
+    owner = current_owner.get()
+    if owner is None:  # not inside a Telegram update
+        return
+    db = container.inject(DBService)
+    await db.log_cost(
+        chat_id=owner.chat_id, user_id=owner.user_id,
+        provider="anthropic", model=_FINAL_PASS_MODEL, kind="text",
+        est_usd=None, price_verified=False,
+        input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"),
+    )
+
+
 async def _build_video_prompt(
     enhance_prompt: str,
     settings: dict,
@@ -1306,7 +1496,8 @@ async def _build_video_prompt(
     )
 
     if GeminiService.parse_script_json(raw) is not None:
-        return raw  # valid JSON ✓
+        # valid JSON ✓ — Claude reviews it when configured; otherwise the draft is returned as-is
+        return await _final_pass_script(raw, settings)
 
     logger.warning("LLM returned invalid JSON for video script — falling back to text format")
     return await _build_video_prompt_text(
@@ -1544,7 +1735,7 @@ def _split_video_prompt(video_prompt: str, gemini) -> tuple[str, str]:
     return scene, voiceover
 
 
-def _format_video_prompt_message(scene: str, voiceover: str) -> str:
+def _format_video_prompt_message(scene: str, voiceover: str, cost_line: str = "") -> str:
     parts = []
     if scene:
         parts.append(f"<b>🎬 Scene / Hook:</b>\n<code>{html.escape(scene)}</code>")
@@ -1552,11 +1743,20 @@ def _format_video_prompt_message(scene: str, voiceover: str) -> str:
         parts.append(f"\n<b>🎙 Voiceover:</b>\n<code>{html.escape(voiceover)}</code>")
     else:
         parts.append("\n<i>⚠️ Voiceover not found — video will have no narration.</i>")
+    if cost_line:
+        parts.append(f"\n<i>{html.escape(cost_line)}</i>")
     return "\n".join(parts)
 
 
-async def _show_video_prompt(target, scene: str, voiceover: str):
-    text = _format_video_prompt_message(scene, voiceover)
+def _video_cost_line(settings: dict) -> str:
+    """Cost estimate for the video that would be rendered with these settings."""
+    seconds = float(settings.get("target_duration", DEFAULT_TARGET_DURATION))
+    return format_video_cost_line(settings.get("video_model") or "", seconds)
+
+
+async def _show_video_prompt(target, scene: str, voiceover: str, settings: dict | None = None):
+    cost_line = _video_cost_line(settings) if settings else ""
+    text = _format_video_prompt_message(scene, voiceover, cost_line)
     await send_long_message(target, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML")
 
 

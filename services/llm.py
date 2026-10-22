@@ -4,11 +4,11 @@ Supports OpenAI (luna, terra, sol) and Gemini providers.
 Handles images, retries, and graceful degradation.
 """
 
+import anthropic
 import asyncio
 import base64
 import logging
 import os
-import re
 from typing import Protocol
 
 from google import genai
@@ -283,6 +283,124 @@ class GeminiTextProvider:
         except Exception as e:
             logger.error(f"Gemini error (model={model}): {e}")
             raise LLMError(f"Failed to generate text via Gemini: {str(e)}")
+
+
+# ── Anthropic Provider ─────────────────────────────────────────────────────
+
+def _should_retry_anthropic(exc: Exception) -> bool:
+    """Retry only temporary failures (rate limit, network, 5xx), never 4xx."""
+    return isinstance(exc, (
+        anthropic.RateLimitError,
+        anthropic.APIConnectionError,  # includes APITimeoutError
+        anthropic.InternalServerError,
+    ))
+
+
+_retry_anthropic = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception(_should_retry_anthropic),
+    reraise=True,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+
+_IMAGE_MEDIA_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".webp": "image/webp",
+}
+
+
+class AnthropicTextProvider:
+    """Claude text provider. Used for the final script review (Gemini drafts,
+    Claude polishes). Only registered when ANTHROPIC_API_KEY is set."""
+
+    name = "anthropic"
+
+    _CATALOG = [
+        {"name": "claude-opus-5-5", "price": "🧠 Claude Opus 5.5 · price unverified", "vision": True},
+    ]
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self._client = None
+
+    @property
+    def client(self) -> anthropic.AsyncAnthropic:
+        """Lazy client. max_retries=0: retries are handled by tenacity above."""
+        if self._client is None:
+            self._client = anthropic.AsyncAnthropic(api_key=self.api_key, max_retries=0, timeout=60)
+        return self._client
+
+    def catalog(self) -> list[dict]:
+        return self._CATALOG.copy()
+
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        model: str = "",
+        image_paths: list[str] | None = None,
+    ) -> str:
+        text, _usage = await self.generate_with_usage(prompt, system_prompt, model, image_paths)
+        return text
+
+    async def generate_with_usage(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        model: str = "",
+        image_paths: list[str] | None = None,
+    ) -> tuple[str, dict]:
+        """Like generate(), but also returns {'input_tokens', 'output_tokens'}
+        so the caller can write them to the cost ledger."""
+        model = model or "claude-opus-5-5"
+        return await self._call(model, prompt, system_prompt, image_paths)
+
+    @_retry_anthropic
+    async def _call(self, model: str, prompt: str, system_prompt: str, image_paths) -> tuple[str, dict]:
+        content: list[dict] = []
+        for path in image_paths or []:
+            media_type = _IMAGE_MEDIA_TYPES.get(os.path.splitext(path)[1].lower(), "image/jpeg")
+            with open(path, "rb") as f:
+                data = base64.b64encode(f.read()).decode("utf-8")
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": data},
+            })
+        content.append({"type": "text", "text": prompt})
+
+        kwargs = {
+            "model": model,
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": content}],
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+
+        try:
+            response = await self.client.messages.create(**kwargs)
+        except (anthropic.RateLimitError, anthropic.APIConnectionError,
+                anthropic.APITimeoutError, anthropic.InternalServerError):
+            raise  # transient: tenacity retries
+        except anthropic.APIError as e:
+            logger.error(f"Anthropic error (model={model}): {e}")
+            raise LLMError(f"Anthropic request failed: {e}")
+
+        if getattr(response, "stop_reason", None) == "refusal":
+            raise LLMRefusal(model, reason="model refused")
+
+        text = "".join(
+            block.text for block in (response.content or [])
+            if getattr(block, "type", "") == "text"
+        )
+        if not text.strip():
+            raise LLMEmptyResponse(model, reason=f"empty content (stop_reason={response.stop_reason})")
+
+        usage = {
+            "input_tokens": getattr(response.usage, "input_tokens", None),
+            "output_tokens": getattr(response.usage, "output_tokens", None),
+        }
+        return text, usage
 
 
 # ── LLM Router ────────────────────────────────────────────────────────────
