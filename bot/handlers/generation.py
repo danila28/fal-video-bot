@@ -52,6 +52,7 @@ from bot.handlers.common import (
     _build_image_prompt,
     _build_ref_image_prompts,
     _build_video_prompt,
+    _explain_provider_error,
     _format_video_prompt_message,
     _is_generating,
     _post_process_video,
@@ -85,6 +86,19 @@ def _is_reference_model(video_model: str) -> bool:
     """Check if the video model is a reference-to-video model."""
     video_model = (video_model or "").lower()
     return video_model.endswith("_ref")
+
+
+def _image_count_for(settings: dict) -> int:
+    """How many start images to generate for the plain (non-reference) image step.
+
+    Higgsfield image-to-video models take exactly one start frame, so extra
+    images from the image_count setting would be paid for and never used.
+    """
+    count = int(settings.get("image_count", 1))
+    model = (settings.get("video_model") or "").lower()
+    if model.startswith("higgsfield_") and not _is_reference_model(model):
+        return 1
+    return count
 
 
 async def _send_image_preview(message, image_paths: list[str], captions: list[str] | None = None) -> None:
@@ -181,7 +195,7 @@ async def handle_raw_prompt(message: Message, state: FSMContext):
         await state.set_state(GenerationState.ENHANCE_PROMPT)
     except Exception as e:
         logger.error(f"Error enhancing prompt: {e}")
-        await message.answer(f"❌ Error enhancing prompt: {e}\nTry again or send a different idea.")
+        await message.answer(f"❌ Error enhancing prompt: {_explain_provider_error(e)}\nTry again or send a different idea.")
         await state.set_state(GenerationState.RAW_PROMPT)
 
 
@@ -238,7 +252,7 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
         except Exception as e:
             logger.error(f"Video prompt generation failed (T2V): {e}")
             await message.answer(
-                f"❌ Error generating prompt: {e}\nTry again.",
+                f"❌ Error generating prompt: {_explain_provider_error(e)}\nTry again.",
                 reply_markup=get_prompt_keyboard(),
             )
             await state.set_state(GenerationState.ENHANCE_PROMPT)
@@ -249,7 +263,7 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
     # ── I2V: generate reference image(s) and show for review ────────────────
     # Flag guards against double-taps — without it two parallel image
     # pipelines run and the user gets (and pays for) duplicate images.
-    image_count = int(settings.get("image_count", 1))
+    image_count = _image_count_for(settings)
     await state.update_data(generation_in_progress=True, generation_started_at=time.time())
     await message.answer(
         f"⏳ Generating {image_count} image{'s' if image_count > 1 else ''}…"
@@ -276,7 +290,7 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
         await message.answer(
-            f"❌ Image generation failed: {e}\nTry again or change the image model.",
+            f"❌ Image generation failed: {_explain_provider_error(e)}\nTry again or change the image model.",
             reply_markup=get_prompt_keyboard(),
         )
         await state.set_state(GenerationState.ENHANCE_PROMPT)
@@ -469,7 +483,7 @@ async def _proceed_to_ref_manual(message: Message, state: FSMContext, user_id: i
     except Exception as e:
         logger.error(f"Reference image generation failed (manual): {e}")
         await message.answer(
-            f"❌ Image generation failed: {e}\nTry again.",
+            f"❌ Image generation failed: {_explain_provider_error(e)}\nTry again.",
             reply_markup=get_prompt_keyboard(),
         )
         await state.set_state(GenerationState.ENHANCE_PROMPT)
@@ -893,7 +907,7 @@ async def handle_image_regenerate(callback: CallbackQuery, state: FSMContext):
         llm = container.inject(LLMService)
         gemini = container.inject(GeminiService)
         imagegen = container.inject(ImageGenService)
-        image_count = int(settings.get("image_count", 1))
+        image_count = _image_count_for(settings)
         await callback.message.answer(
             f"Creating {image_count} image{'s' if image_count > 1 else ''}…"
         )
@@ -969,7 +983,7 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
         await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
     except Exception as e:
         await callback.message.answer(
-            f"❌ Error generating prompt: {e}\nTry again?",
+            f"❌ Error generating prompt: {_explain_provider_error(e)}\nTry again?",
             reply_markup=get_image_keyboard(),
         )
         await state.set_state(GenerationState.CONFIRM_IMAGE)

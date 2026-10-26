@@ -45,12 +45,12 @@ def test_minimax_body_has_documented_fields_only():
 
 
 def test_seedance_ref_sends_all_images_and_valid_resolution():
-    urls = [f"https://x/{i}.jpg" for i in range(12)]
+    urls = [f"https://x/{i}.jpg" for i in range(35)]
     body = hf.build_request_body(
         "higgsfield_seedance_ref", prompt="p", duration=7, image_urls=urls,
         resolution="1080p", sound=False,
     )
-    assert body["image_urls"] == urls[:9]          # documented maximum is 9
+    assert body["image_urls"] == urls[:30]         # documented maximum for Seedance 2.5 is 30
     assert body["resolution"] == "1080p"
     assert body["generate_audio"] is False
     assert body["duration"] == 7
@@ -59,7 +59,7 @@ def test_seedance_ref_sends_all_images_and_valid_resolution():
 def test_seedance_unknown_resolution_falls_back_to_720p():
     body = hf.build_request_body(
         "higgsfield_seedance_ref", prompt="p", duration=5,
-        image_urls=["https://x/a.jpg"], resolution="8k",
+        image_urls=["https://x/a.jpg"], resolution="4k",   # 2.5 has no 4k
     )
     assert body["resolution"] == "720p"
 
@@ -81,7 +81,8 @@ def test_unknown_model_and_missing_image_are_rejected():
 def test_endpoints_match_documentation():
     assert hf.HF_MODELS["higgsfield_kling_std"].endpoint == "kling-video/v3.0/std/image-to-video"
     assert hf.HF_MODELS["higgsfield_minimax_h3"].endpoint == "minimax/h3/image-to-video"
-    assert hf.HF_MODELS["higgsfield_seedance_ref"].endpoint == "bytedance/seedance-2.0/reference-to-video"
+    assert hf.HF_MODELS["higgsfield_seedance_ref"].endpoint == "bytedance/seedance-2.5/reference-to-video"
+    assert hf.HF_MODELS["higgsfield_seedance_ref"].max_dur == 30
     assert hf.HF_MODELS["higgsfield_seedance_ref"].reference is True
     assert hf.HF_MODELS["higgsfield_kling_std"].reference is False
 

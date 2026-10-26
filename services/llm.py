@@ -212,7 +212,8 @@ class GeminiTextProvider:
     _CATALOG = [
         {"name": "gemini-3.1-flash-lite", "price": "💰 ~$0.10/1M tok", "vision": True},
         {"name": "gemini-3.5-flash", "price": "⚖️  ~$0.15/1M tok", "vision": True},
-        {"name": "gemini-3.1-pro", "price": "🏆 ~$1.25/1M tok", "vision": True},
+        # The API id is "gemini-3.1-pro-preview"; plain "gemini-3.1-pro" returns 404.
+        {"name": "gemini-3.1-pro-preview", "price": "🏆 ~$1.25/1M tok", "vision": True},
     ]
 
     _IMAGE_MIME_BY_EXT = {
@@ -315,6 +316,10 @@ class AnthropicTextProvider:
     Claude polishes). Only registered when ANTHROPIC_API_KEY is set."""
 
     name = "anthropic"
+    # Claude is used only for the final script review, so it is kept out of the
+    # text-model menu: choosing it there makes every plot/hashtag call a paid
+    # Claude call. Saved choices still resolve (see LLMService._resolve_model).
+    in_menu = False
 
     _CATALOG = [
         {"name": "claude-opus-5-5", "price": "🧠 Claude Opus 5.5 · price unverified", "vision": True},
@@ -420,33 +425,53 @@ class LLMService:
         if not self.providers_map:
             raise RuntimeError("At least one LLM provider must be configured")
 
+    # Names that were saved in user settings under an id the API does not accept.
+    _MODEL_ALIASES = {"gemini-3.1-pro": "gemini-3.1-pro-preview"}
+
     def get_text_models(self) -> list[dict]:
-        """Collect menu from all providers with their catalogs."""
+        """Menu entries from every provider that wants to be listed (Claude, which
+        is used only for the final script review, is not)."""
         models = []
         for provider in self.providers_map.values():
-            for model in provider.catalog():
-                models.append(model)
+            if getattr(provider, "in_menu", True) is False:
+                continue
+            models.extend(provider.catalog())
         return models
 
-    def _resolve_model(self, model: str) -> tuple[str, str]:
-        """Resolve model name to (provider_name, actual_model).
-
-        Returns (provider, model) or raises LLMError if model not found.
-        Empty model uses default.
-        Unknown model logs warning and uses default.
-        """
-        if not model or not model.strip():
-            model = self.default_model
-
-        # Find provider for this model
+    def _find_model(self, model: str) -> tuple[str, str] | None:
         for provider in self.providers_map.values():
             for cat in provider.catalog():
                 if cat["name"] == model:
                     return (provider.name, model)
+        return None
 
-        # Unknown model: log warning and use default
+    def _resolve_model(self, model: str) -> tuple[str, str]:
+        """Resolve a model name to (provider_name, model).
+
+        Empty name -> default model. Old/renamed ids are mapped through
+        _MODEL_ALIASES. An unknown name falls back to the default model, and when
+        the default's provider is not configured, to the first model of the
+        first configured provider, so a stale setting never sends one provider
+        another provider's model name.
+        """
+        model = (model or "").strip() or self.default_model
+        model = self._MODEL_ALIASES.get(model, model)
+
+        found = self._find_model(model)
+        if found:
+            return found
+
         logger.warning(f"Unknown LLM model '{model}', falling back to '{self.default_model}'")
-        return (self.providers_map["openai" if "openai" in self.providers_map else list(self.providers_map.keys())[0]].name, self.default_model)
+        found = self._find_model(self.default_model)
+        if found:
+            return found
+        for provider in self.providers_map.values():
+            if getattr(provider, "in_menu", True) is False:
+                continue  # never fall back to the review-only provider
+            catalog = provider.catalog()
+            if catalog:
+                return (provider.name, catalog[0]["name"])
+        raise LLMError("No LLM model is available")
 
     async def generate_text(
         self,

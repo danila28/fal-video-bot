@@ -76,9 +76,9 @@ class GeminiService:
             # Higgsfield-hosted models. Shown only when HIGGSFIELD_API_KEY is set
             # (filtered in bot/handlers/settings.py). No price is known for these.
             {"separator": True, "label": "── Higgsfield ──"},
-            {"name": "higgsfield_kling_std",    "price": "🖼 Kling 3.0 Std · Higgsfield · price not verified"},
-            {"name": "higgsfield_minimax_h3",   "price": "🖼 MiniMax H3 · Higgsfield · price not verified"},
-            {"name": "higgsfield_seedance_ref", "price": "🎭 Seedance 2.0 Ref · Higgsfield · price not verified"},
+            {"name": "higgsfield_kling_std",    "price": "🖼 Kling 3.0 Std · price not verified"},
+            {"name": "higgsfield_minimax_h3",   "price": "🖼 MiniMax H3 · price not verified"},
+            {"name": "higgsfield_seedance_ref", "price": "🎭 Seedance 2.5 Ref · price not verified"},
         ]
 
     # ── Voiceover parsing ──────────────────────────────────────────────────

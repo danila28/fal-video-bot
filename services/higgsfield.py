@@ -14,7 +14,7 @@ Atlas upload endpoint the Kling service already uses (KlingService.upload_photo)
 Supported models (settings video_model):
   higgsfield_kling_std      Kling 3.0 Standard, image-to-video (one photo)
   higgsfield_minimax_h3     MiniMax H3, image-to-video (one photo)
-  higgsfield_seedance_ref   Seedance 2.0, reference-to-video (one or more photos)
+  higgsfield_seedance_ref   Seedance 2.5, reference-to-video (one or more photos)
 """
 
 import asyncio
@@ -34,7 +34,7 @@ _POLL_MAX_TRANSIENT_ERRORS = 6
 _KLING_MAX_PROMPT_CHARS = 2500
 
 _STATUS_FAILED = {"failed", "nsfw", "canceled"}
-_SEEDANCE_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
+_SEEDANCE_RESOLUTIONS = {"480p", "720p", "1080p"}   # Seedance 2.5 has no 4k
 
 
 class HiggsfieldError(Exception):
@@ -63,9 +63,9 @@ HF_MODELS: dict[str, HiggsfieldModel] = {
         min_dur=5, max_dur=15, reference=False, has_audio=False,
     ),
     "higgsfield_seedance_ref": HiggsfieldModel(
-        endpoint="bytedance/seedance-2.0/reference-to-video",
-        label="Seedance 2.0 Ref (Higgsfield)",
-        min_dur=4, max_dur=15, reference=True, has_audio=True,
+        endpoint="bytedance/seedance-2.5/reference-to-video",
+        label="Seedance 2.5 Ref (Higgsfield)",
+        min_dur=4, max_dur=30, reference=True, has_audio=True,
     ),
 }
 
@@ -110,7 +110,7 @@ def build_request_body(
         resolution = "720p"
     return {
         "prompt": prompt,
-        "image_urls": image_urls[:9],
+        "image_urls": image_urls[:30],   # documented maximum for Seedance 2.5
         "duration": duration,
         "resolution": resolution,
         "aspect_ratio": "9:16",

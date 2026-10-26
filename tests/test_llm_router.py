@@ -118,3 +118,53 @@ async def test_generate_text_vision_fallback():
     # Should have called with "has-vision" model, not "no-vision"
     call_args = provider.generate.call_args
     assert call_args[0][2] == "has-vision"
+
+
+# ── aliases, menu visibility and safe fallback ──────────────────────────────
+
+class _Provider:
+    def __init__(self, name, models, in_menu=True):
+        self.name = name
+        self._models = models
+        if not in_menu:
+            self.in_menu = False
+
+    def catalog(self):
+        return [{"name": m, "price": "x", "vision": True} for m in self._models]
+
+    async def generate(self, prompt, system_prompt="", model="", image_paths=None):
+        return f"{self.name}:{model}"
+
+
+def test_old_gemini_pro_id_is_mapped_to_the_working_one():
+    router = LLMService(
+        providers=[_Provider("gemini", ["gemini-3.1-pro-preview"])], default_model="gemini-3.1-pro-preview",
+    )
+    assert router._resolve_model("gemini-3.1-pro") == ("gemini", "gemini-3.1-pro-preview")
+
+
+def test_real_gemini_catalog_uses_the_api_id():
+    names = [m["name"] for m in GeminiTextProvider(api_key="k").catalog()]
+    assert "gemini-3.1-pro-preview" in names and "gemini-3.1-pro" not in names
+
+
+def test_review_only_provider_is_hidden_from_menu_but_still_resolvable():
+    router = LLMService(providers=[
+        _Provider("openai", ["terra"]),
+        _Provider("anthropic", ["claude-opus-5-5"], in_menu=False),
+    ])
+    assert [m["name"] for m in router.get_text_models()] == ["terra"]
+    assert router._resolve_model("claude-opus-5-5") == ("anthropic", "claude-opus-5-5")
+
+
+def test_unknown_model_without_openai_does_not_send_terra_to_gemini():
+    router = LLMService(providers=[_Provider("gemini", ["gemini-3.5-flash"])], default_model="terra")
+    assert router._resolve_model("something-removed") == ("gemini", "gemini-3.5-flash")
+
+
+def test_fallback_never_picks_the_review_only_provider():
+    router = LLMService(providers=[
+        _Provider("anthropic", ["claude-opus-5-5"], in_menu=False),
+        _Provider("gemini", ["gemini-3.5-flash"]),
+    ], default_model="terra")
+    assert router._resolve_model("nope") == ("gemini", "gemini-3.5-flash")

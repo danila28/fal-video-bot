@@ -1748,6 +1748,30 @@ def _format_video_prompt_message(scene: str, voiceover: str, cost_line: str = ""
     return "\n".join(parts)
 
 
+def _explain_provider_error(err) -> str:
+    """Turn a few well-known provider failures into an instruction the operator
+    can act on. Anything else is returned unchanged."""
+    text = str(err)
+    low = text.lower()
+    if "resource_exhausted" in low and ("limit: 0" in low or "free_tier" in low):
+        return (
+            "Google's free tier does not include this model (quota 0). Enable billing "
+            "for the Gemini API key in Google AI Studio, or pick a Nano Banana model "
+            "from Atlas in Settings → Image model."
+        )
+    if "credit balance is too low" in low:
+        return (
+            "the Anthropic balance is empty. Top up credits at console.anthropic.com "
+            "or choose another text model in Settings."
+        )
+    if "not found" in low and "models/" in low:
+        return (
+            "the selected text model id is not available for this API key. "
+            "Choose another text model in Settings → Text model."
+        )
+    return text
+
+
 def _video_cost_line(settings: dict) -> str:
     """Cost estimate for the video that would be rendered with these settings."""
     seconds = float(settings.get("target_duration", DEFAULT_TARGET_DURATION))
