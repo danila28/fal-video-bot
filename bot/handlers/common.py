@@ -1308,6 +1308,8 @@ def _validate_final_script(draft_text: str, polished_text: str, target_seconds: 
 async def _final_pass_script(draft_text: str, settings: dict) -> str:
     """Claude review of a Gemini script draft. Returns the corrected JSON, or the
     draft unchanged when Claude is unavailable or the result breaks a hard rule."""
+    if not settings.get("claude_enrichment"):
+        return draft_text  # switched off (Settings → ✨ Claude polish); off by default
     if (settings.get("text_model") or "").startswith("claude"):
         return draft_text  # the draft was already written by Claude
     llm = container.inject(LLMService)
@@ -1754,10 +1756,18 @@ def _explain_provider_error(err) -> str:
     text = str(err)
     low = text.lower()
     if "resource_exhausted" in low and ("limit: 0" in low or "free_tier" in low):
+        match = re.search(r"model:\s*([\w.\-]+)", low)
+        model = match.group(1) if match else "this model"
+        if "image" in model:
+            return (
+                f"Google's free tier has no quota for {model}. Enable billing for the "
+                "Gemini API key in Google AI Studio, or pick a Nano Banana model "
+                "from Atlas in Settings → Image model."
+            )
         return (
-            "Google's free tier does not include this model (quota 0). Enable billing "
-            "for the Gemini API key in Google AI Studio, or pick a Nano Banana model "
-            "from Atlas in Settings → Image model."
+            f"Google's free tier has no quota for {model}. Enable billing for the "
+            "Gemini API key in Google AI Studio, or choose another text model in "
+            "Settings → Text model (for example gemini-3.5-flash)."
         )
     if "credit balance is too low" in low:
         return (

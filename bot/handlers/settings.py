@@ -63,21 +63,63 @@ async def _is_t2v_selected(user_id: int, chat_id: int) -> bool:
     return (s.get("video_model") or "") in _T2V_VIDEO_MODELS
 
 
+def _claude_state(s: dict) -> bool | None:
+    """None when ANTHROPIC_API_KEY is not set, else whether the polish is switched on."""
+    if not config.get("ANTHROPIC_API_KEY"):
+        return None
+    return bool(s.get("claude_enrichment"))
+
+
+async def _settings_keyboard(user_id: int, chat_id: int) -> InlineKeyboardMarkup:
+    """Main settings keyboard built from one read of the user's settings."""
+    db = container.inject(DBService)
+    s = await db.get_settings(user_id, chat_id)
+    return get_settings_keyboard(
+        (s.get("video_model") or "") in _T2V_VIDEO_MODELS,
+        _claude_state(s),
+    )
+
+
 @router.message(F.text == SETTINGS_BUTTON_TEXT, IsAllowed(allowed_users))
 async def handle_settings_button(message: Message, state: FSMContext):
     await state.clear()
-    is_t2v = await _is_t2v_selected(message.from_user.id, message.chat.id)
-    await message.answer("⚙️ Settings", reply_markup=get_settings_keyboard(is_t2v))
+    keyboard = await _settings_keyboard(message.from_user.id, message.chat.id)
+    await message.answer("⚙️ Settings", reply_markup=keyboard)
 
 
 @router.callback_query(lambda c: c.data == "settings:back", IsAllowed(allowed_users))
 async def settings_back(callback: CallbackQuery):
     await callback.answer()
-    is_t2v = await _is_t2v_selected(callback.from_user.id, callback.message.chat.id)
+    keyboard = await _settings_keyboard(callback.from_user.id, callback.message.chat.id)
     try:
-        await callback.message.edit_text("⚙️ Settings", reply_markup=get_settings_keyboard(is_t2v))
+        await callback.message.edit_text("⚙️ Settings", reply_markup=keyboard)
     except Exception:
-        await callback.message.answer("⚙️ Settings", reply_markup=get_settings_keyboard(is_t2v))
+        await callback.message.answer("⚙️ Settings", reply_markup=keyboard)
+
+
+@router.callback_query(lambda c: c.data == "settings:claude_toggle", IsAllowed(allowed_users))
+async def settings_claude_toggle(callback: CallbackQuery):
+    """Switch the Claude script polish on/off for this user and chat."""
+    if not config.get("ANTHROPIC_API_KEY"):
+        await callback.answer("Claude is not configured (no ANTHROPIC_API_KEY).", show_alert=True)
+        return
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    new_value = not bool(s.get("claude_enrichment"))
+    s = await db.update_settings(
+        callback.from_user.id, callback.message.chat.id, {"claude_enrichment": new_value},
+    )
+    await callback.answer(
+        "Claude polish is ON: scripts are reviewed before rendering." if new_value
+        else "Claude polish is OFF."
+    )
+    keyboard = get_settings_keyboard(
+        (s.get("video_model") or "") in _T2V_VIDEO_MODELS, _claude_state(s),
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass  # message unchanged or gone; the setting is already saved
 
 
 def _advanced_kb(s: dict):

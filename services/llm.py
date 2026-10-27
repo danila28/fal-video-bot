@@ -12,6 +12,7 @@ import os
 from typing import Protocol
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from openai import AsyncOpenAI, RateLimitError, APIConnectionError, APITimeoutError, InternalServerError, BadRequestError
 from tenacity import (
@@ -20,6 +21,7 @@ from tenacity import (
     wait_exponential,
     before_sleep_log,
     retry_if_exception,
+    retry_if_exception_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,10 @@ class LLMEmptyResponse(LLMError):
         self.model = model
         self.reason = reason
         super().__init__(f"LLM empty response ({model}): {reason}")
+
+
+class LLMTransientError(LLMError):
+    """A failure worth retrying: 5xx, network trouble, or a rate limit that has quota."""
 
 
 class LLMRefusal(LLMError):
@@ -63,9 +69,23 @@ _retry_openai = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
-_retry_cheap = retry(
+def _is_transient_gemini_error(exc: Exception) -> bool:
+    """5xx and network errors are retried; so is a 429 that still has quota.
+    A 429 with "limit: 0" means this key's tier has no quota for the model, so
+    retrying only makes the user wait. 4xx (404 unknown model, 400, 403) never retry."""
+    code = getattr(exc, "code", None)
+    text = str(exc).lower()
+    if isinstance(exc, genai_errors.ServerError) or code in (500, 502, 503, 504):
+        return True
+    if code == 429:
+        return "limit: 0" not in text
+    return isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError))
+
+
+_retry_gemini = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(LLMTransientError),
     reraise=True,
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
@@ -214,6 +234,9 @@ class GeminiTextProvider:
         {"name": "gemini-3.5-flash", "price": "⚖️  ~$0.15/1M tok", "vision": True},
         # The API id is "gemini-3.1-pro-preview"; plain "gemini-3.1-pro" returns 404.
         {"name": "gemini-3.1-pro-preview", "price": "🏆 ~$1.25/1M tok", "vision": True},
+        # Listed by the Gemini API for our key. Needs a paid Google tier (free-tier
+        # quota is 0). Price unknown; vision support not yet verified.
+        {"name": "gemini-4-argon", "price": "🧪 new · paid Google tier · price unverified", "vision": True},
     ]
 
     _IMAGE_MIME_BY_EXT = {
@@ -235,7 +258,7 @@ class GeminiTextProvider:
     def catalog(self) -> list[dict]:
         return self._CATALOG.copy()
 
-    @_retry_cheap
+    @_retry_gemini
     async def generate(
         self,
         prompt: str,
@@ -283,7 +306,8 @@ class GeminiTextProvider:
             raise
         except Exception as e:
             logger.error(f"Gemini error (model={model}): {e}")
-            raise LLMError(f"Failed to generate text via Gemini: {str(e)}")
+            error_cls = LLMTransientError if _is_transient_gemini_error(e) else LLMError
+            raise error_cls(f"Failed to generate text via Gemini: {str(e)}")
 
 
 # ── Anthropic Provider ─────────────────────────────────────────────────────

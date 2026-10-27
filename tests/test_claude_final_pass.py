@@ -202,31 +202,31 @@ def _run_final_pass(monkeypatch, provider, settings, draft=DRAFT):
 
 def test_final_pass_uses_claude_output_when_valid(monkeypatch):
     claude = _FakeClaude(reply=_script([6, 5, 5], spoken="better"))
-    out, db = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15})
+    out, db = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15, "claude_enrichment": True})
     assert json.loads(out)["spoken_text"] == "better"
     assert claude.calls == 1
 
 
 def test_final_pass_keeps_draft_when_claude_is_not_configured(monkeypatch):
-    out, _ = _run_final_pass(monkeypatch, None, {"text_model": "terra", "target_duration": 15})
+    out, _ = _run_final_pass(monkeypatch, None, {"text_model": "terra", "target_duration": 15, "claude_enrichment": True})
     assert out == DRAFT
 
 
 def test_final_pass_keeps_draft_on_api_error(monkeypatch):
     claude = _FakeClaude(error=LLMError("upstream down"))
-    out, _ = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15})
+    out, _ = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15, "claude_enrichment": True})
     assert out == DRAFT
 
 
 def test_final_pass_keeps_draft_when_rules_are_broken(monkeypatch):
     claude = _FakeClaude(reply=_script([15, 15, 15], spoken="too long"))
-    out, _ = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15})
+    out, _ = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15, "claude_enrichment": True})
     assert out == DRAFT
 
 
 def test_final_pass_skipped_when_draft_already_came_from_claude(monkeypatch):
     claude = _FakeClaude(reply=_script([6, 5, 5]))
-    out, _ = _run_final_pass(monkeypatch, claude, {"text_model": "claude-opus-5-5", "target_duration": 15})
+    out, _ = _run_final_pass(monkeypatch, claude, {"text_model": "claude-opus-5-5", "target_duration": 15, "claude_enrichment": True})
     assert out == DRAFT
     assert claude.calls == 0
 
@@ -236,9 +236,18 @@ def test_final_pass_logs_tokens_for_the_owner(monkeypatch):
     claude = _FakeClaude(reply=_script([6, 5, 5]))
     token = current_owner.set(JobOwner(chat_id=-100, user_id=42))
     try:
-        _, db = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15})
+        _, db = _run_final_pass(monkeypatch, claude, {"text_model": "terra", "target_duration": 15, "claude_enrichment": True})
     finally:
         current_owner.reset(token)
     assert db.logged and db.logged[0]["provider"] == "anthropic"
     assert db.logged[0]["input_tokens"] == 10 and db.logged[0]["output_tokens"] == 20
     assert db.logged[0]["est_usd"] is None  # no verified price, so no estimate
+
+
+def test_final_pass_is_off_by_default(monkeypatch):
+    claude = _FakeClaude(reply=_script([6, 5, 5], spoken="better"))
+    for settings in ({"text_model": "terra", "target_duration": 15},
+                     {"text_model": "terra", "target_duration": 15, "claude_enrichment": False}):
+        out, _ = _run_final_pass(monkeypatch, claude, settings)
+        assert out == DRAFT
+    assert claude.calls == 0   # no API call, no cost, when the switch is off

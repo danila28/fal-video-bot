@@ -231,8 +231,18 @@ def get_speed_keyboard(current: float = 1.0):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_settings_keyboard(is_t2v: bool = False):
-    """Main settings page — model selection and content style."""
+def get_claude_toggle_button(claude: bool | None) -> InlineKeyboardButton:
+    """Claude script polish switch. None = no ANTHROPIC_API_KEY (button is inert)."""
+    if claude is None:
+        return InlineKeyboardButton(text="✨ Claude polish: not configured", callback_data="noop")
+    state = "ON ✅" if claude else "OFF"
+    return InlineKeyboardButton(text=f"✨ Claude polish: {state}", callback_data="settings:claude_toggle")
+
+
+def get_settings_keyboard(is_t2v: bool = False, claude: bool | None = None):
+    """Main settings page — model selection and content style.
+
+    `claude`: None when Claude is not configured, otherwise whether the polish is on."""
     model_row = [InlineKeyboardButton(text="🧠 Text model", callback_data="settings:text_model")]
     # T2V models generate straight from text — the image model is unused, hide it.
     if not is_t2v:
@@ -243,6 +253,7 @@ def get_settings_keyboard(is_t2v: bool = False):
             [
                 InlineKeyboardButton(text="🎬 Video model", callback_data="settings:video_model"),
             ],
+            [get_claude_toggle_button(claude)],
             [
                 InlineKeyboardButton(text="🎨 Content style", callback_data="settings:style"),
             ],
