@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.higgsfield.ai"
 _POLL_INTERVAL = 5           # seconds between status checks
-_POLL_TIMEOUT = 600          # 10 minutes max wait
+# Same reasoning as Atlas: a 10-minute cap aborts clips that would still finish and be
+# charged. Override with HIGGSFIELD_VIDEO_TIMEOUT (seconds).
+_POLL_TIMEOUT = max(60, int(os.getenv("HIGGSFIELD_VIDEO_TIMEOUT", "1800") or 1800))
 _POLL_MAX_TRANSIENT_ERRORS = 6
 _KLING_MAX_PROMPT_CHARS = 2500
 
@@ -215,7 +217,10 @@ class HiggsfieldService:
             if status in _STATUS_FAILED:
                 err = payload.get("error") or status
                 raise HiggsfieldError(f"{label}: generation {status}: {err}")
-        raise HiggsfieldError(f"{label}: timeout after {_POLL_TIMEOUT}s")
+        raise HiggsfieldError(
+            f"{label}: timeout after {_POLL_TIMEOUT}s. Request {submitted.get('request_id')} "
+            f"may still finish on Higgsfield and be charged — check the console before retrying."
+        )
 
     async def download(self, url: str, ext: str = "mp4") -> str:
         dest = os.path.join(self.static_dir, f"{uuid.uuid4()}.{ext}")

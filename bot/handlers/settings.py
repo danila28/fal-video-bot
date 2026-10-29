@@ -495,6 +495,8 @@ async def settings_image_model(callback: CallbackQuery):
     gemini = container.inject(GeminiService)
     rows = []
     for m in gemini.get_image_models():
+        if m.get("hidden"):
+            continue  # temporarily hidden for testing, kept in the catalogue
         if m.get("separator"):
             rows.append([InlineKeyboardButton(text=m["label"], callback_data="noop")])
         else:
@@ -917,11 +919,16 @@ async def handle_text_model_selected(callback: CallbackQuery):
 
 @router.callback_query(lambda c: c.data.startswith("image-model:"), IsAllowed(allowed_users))
 async def handle_image_model_selected(callback: CallbackQuery):
+    model = callback.data.split(":", 1)[1]
+    hidden = {m["name"] for m in container.inject(GeminiService).get_image_models() if m.get("hidden")}
+    if model in hidden:
+        # a keyboard sent before the model was hidden can still be on screen
+        await callback.answer("This model is temporarily unavailable.", show_alert=True)
+        return
     await callback.answer()
     await callback.message.edit_reply_markup(reply_markup=None)
     try:
         db = container.inject(DBService)
-        model = callback.data.split(":", 1)[1]
         await db.update_settings(callback.from_user.id, callback.message.chat.id, {"image_model": model})
         await callback.message.answer(f"✅ Image model: {model}")
     except Exception as e:

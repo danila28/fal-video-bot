@@ -78,8 +78,11 @@ async def _is_generating(state: FSMContext) -> bool:
     if not data.get("generation_in_progress"):
         return False
     started_at = data.get("generation_started_at", 0)
-    if time.time() - started_at > 1800:
-        logger.warning("Auto-clearing stale generation_in_progress flag (>30 min)")
+    # A multi-clip video renders its clips one after another, each of which may wait
+    # up to ATLAS_VIDEO_TIMEOUT, so the flag must outlive a whole video. A restart
+    # clears it anyway (utils/recovery.py).
+    if time.time() - started_at > 7200:
+        logger.warning("Auto-clearing stale generation_in_progress flag (>2 h)")
         await state.update_data(generation_in_progress=False, generation_started_at=0)
         return False
     return True
@@ -1768,6 +1771,13 @@ def _explain_provider_error(err) -> str:
             f"Google's free tier has no quota for {model}. Enable billing for the "
             "Gemini API key in Google AI Studio, or choose another text model in "
             "Settings → Text model (for example gemini-3.5-flash)."
+        )
+    if "atlas" in low and (
+        "upstream connect" in low or "http 502" in low or "http 503" in low or "http 504" in low
+    ):
+        return (
+            "Atlas Cloud is temporarily unavailable (gateway error). This usually clears "
+            "within a minute. Try again, or pick another model."
         )
     if "credit balance is too low" in low:
         return (

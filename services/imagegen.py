@@ -36,6 +36,16 @@ _GEMINI_MODELS = {_GEMINI_NANO_BANANA_2, _GEMINI_NANO_BANANA_PRO}
 
 _ALL_MODELS = _ATLAS_MODELS | _GEMINI_MODELS
 
+# !!! TEMPORARILY HIDDEN FOR TESTING - DO NOT DELETE !!!
+# Models switched off in the image-model menu (see GeminiService.get_image_models,
+# "hidden": True) mapped to the model that serves a saved choice meanwhile. The
+# replacement is the Atlas default because every Gemini image model currently has
+# quota 0 on our free-tier key. To bring the pro model back: remove the "hidden"
+# flag in get_image_models and delete its line here.
+_TEMP_HIDDEN_IMAGE_MODELS = {
+    _GEMINI_NANO_BANANA_PRO: _ATLAS_NANO_BANANA_2,
+}
+
 
 class ImageGenService:
     def __init__(self, api_key: str = "", atlas_api_key: str = "", static_dir: str = ""):
@@ -158,6 +168,10 @@ class ImageGenService:
     ) -> str:
         """Generate one image. Raises on failure."""
         model = model or self._DEFAULT_MODEL
+        if model in _TEMP_HIDDEN_IMAGE_MODELS:
+            replacement = _TEMP_HIDDEN_IMAGE_MODELS[model]
+            logger.warning(f"Image model '{model}' is temporarily hidden, using '{replacement}'")
+            model = replacement
         aspect_ratio = self._aspect_for_video_model(video_model)
         logger.info(f"Image generation | model={model} | aspect={aspect_ratio} | prompt={prompt[:80]}…")
 

@@ -233,7 +233,14 @@ class GeminiTextProvider:
         {"name": "gemini-3.1-flash-lite", "price": "💰 ~$0.10/1M tok", "vision": True},
         {"name": "gemini-3.5-flash", "price": "⚖️  ~$0.15/1M tok", "vision": True},
         # The API id is "gemini-3.1-pro-preview"; plain "gemini-3.1-pro" returns 404.
-        {"name": "gemini-3.1-pro-preview", "price": "🏆 ~$1.25/1M tok", "vision": True},
+        #
+        # !!! TEMPORARILY HIDDEN FOR TESTING - DO NOT DELETE THIS ENTRY !!!
+        # The model is switched off only by the "hidden" flag so it can be restored
+        # by removing that one flag. While hidden it is missing from the text-model
+        # menu, and a saved choice is routed to "replacement" instead of failing.
+        # (Reason: this key is on the free Google tier, where the model has quota 0.)
+        {"name": "gemini-3.1-pro-preview", "price": "🏆 ~$1.25/1M tok", "vision": True,
+         "hidden": True, "replacement": "gemini-3.5-flash"},
         # Listed by the Gemini API for our key. Needs a paid Google tier (free-tier
         # quota is 0). Price unknown; vision support not yet verified.
         {"name": "gemini-4-argon", "price": "🧪 new · paid Google tier · price unverified", "vision": True},
@@ -459,14 +466,22 @@ class LLMService:
         for provider in self.providers_map.values():
             if getattr(provider, "in_menu", True) is False:
                 continue
-            models.extend(provider.catalog())
+            # entries flagged "hidden" stay in the catalogue but are not offered
+            models.extend(m for m in provider.catalog() if not m.get("hidden"))
         return models
 
     def _find_model(self, model: str) -> tuple[str, str] | None:
         for provider in self.providers_map.values():
             for cat in provider.catalog():
-                if cat["name"] == model:
-                    return (provider.name, model)
+                if cat["name"] != model:
+                    continue
+                if cat.get("hidden"):
+                    # Temporarily switched off (see the catalogue): use the stated
+                    # replacement so a saved choice keeps working.
+                    replacement = cat.get("replacement")
+                    logger.warning(f"Model '{model}' is temporarily hidden, using '{replacement}'")
+                    return self._find_model(replacement) if replacement else None
+                return (provider.name, model)
         return None
 
     def _resolve_model(self, model: str) -> tuple[str, str]:

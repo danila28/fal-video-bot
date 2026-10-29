@@ -14,8 +14,31 @@ from utils.job_context import current_owner
 logger = logging.getLogger(__name__)
 
 _BASE_URL      = "https://api.atlascloud.ai/api/v1"
-_POLL_INTERVAL = 5    # seconds between status checks
-_POLL_TIMEOUT  = 600  # 10 minutes max wait
+_POLL_INTERVAL = 5          # seconds between status checks...
+_POLL_SLOW_INTERVAL = 10    # ...and after the first two minutes, to keep request volume down
+_POLL_SLOW_AFTER = 120
+
+
+def _env_seconds(name: str, default: int) -> int:
+    try:
+        return max(60, int(os.getenv(name, default)))
+    except ValueError:
+        return default
+
+
+# How long we wait for one job. A video clip can wait in Atlas's queue for a long
+# time at peak hours; the old 10-minute cap aborted clips that would still have
+# finished (and been charged), so the operator paid for a video they never got.
+# Override with ATLAS_VIDEO_TIMEOUT / ATLAS_IMAGE_TIMEOUT (seconds).
+_POLL_TIMEOUT_VIDEO = _env_seconds("ATLAS_VIDEO_TIMEOUT", 1800)
+_POLL_TIMEOUT_IMAGE = _env_seconds("ATLAS_IMAGE_TIMEOUT", 600)
+
+# Submitting a job is retried only when the request cannot have reached Atlas's
+# model service: gateway errors (502/503/504, e.g. "upstream connect error ...
+# connection timeout") and failed connections. Anything else (400, 402, ...) is
+# final, so a retry never runs a second paid job after a real error.
+_SUBMIT_RETRY_STATUSES = {502, 503, 504}
+_SUBMIT_RETRY_DELAYS = (2, 5)   # seconds before the 2nd and 3rd attempt
 _POLL_MAX_TRANSIENT_ERRORS = 6  # consecutive 5xx/network errors tolerated before giving up
 
 
@@ -88,17 +111,7 @@ class AtlasClient:
             # ── Submit ────────────────────────────────────────────────
             payload = {"model": model, **params}
             logger.info(f"Atlas {endpoint} payload: {payload}")
-            async with session.post(
-                f"{_BASE_URL}/model/{endpoint}",
-                headers=self._json_headers,
-                json=payload,
-            ) as resp:
-                if resp.status not in (200, 201):
-                    text = await resp.text()
-                    raise Exception(
-                        f"Atlas {endpoint} submit failed HTTP {resp.status}: {text[:300]}"
-                    )
-                data = await resp.json()
+            data = await self._submit(session, endpoint, payload)
 
             # Normalise: both {"data": {"id": ...}} and {"id": ...} are seen.
             inner = data.get("data") or data
@@ -107,23 +120,57 @@ class AtlasClient:
                 raise Exception(f"No prediction id in Atlas response: {data}")
             logger.info(f"Atlas {endpoint}: model={model} id={pred_id}")
 
+            timeout = _POLL_TIMEOUT_VIDEO if endpoint == "generateVideo" else _POLL_TIMEOUT_IMAGE
             await self._track_start(pred_id, model)
             try:
-                output_url = await self._poll(session, pred_id, model)
+                output_url = await self._poll(session, pred_id, model, timeout)
             except Exception as e:
                 await self._track_finish(pred_id, "failed", str(e))
                 raise
             await self._track_finish(pred_id, "completed")
             return output_url
 
-    async def _poll(self, session: aiohttp.ClientSession, pred_id: str, model: str) -> str:
+    async def _submit(self, session: aiohttp.ClientSession, endpoint: str, payload: dict) -> dict:
+        """POST a job. Retries gateway errors and failed connections (see
+        _SUBMIT_RETRY_STATUSES); every other error is raised immediately."""
+        last_error: Exception | None = None
+        for attempt in range(len(_SUBMIT_RETRY_DELAYS) + 1):
+            try:
+                async with session.post(
+                    f"{_BASE_URL}/model/{endpoint}",
+                    headers=self._json_headers,
+                    json=payload,
+                ) as resp:
+                    if resp.status in (200, 201):
+                        return await resp.json()
+                    text = await resp.text()
+                    error = Exception(
+                        f"Atlas {endpoint} submit failed HTTP {resp.status}: {text[:300]}"
+                    )
+                    if resp.status not in _SUBMIT_RETRY_STATUSES:
+                        raise error
+                    last_error = error
+            except aiohttp.ClientConnectorError as e:
+                last_error = Exception(f"Atlas {endpoint} submit failed: cannot connect: {e}")
+
+            if attempt < len(_SUBMIT_RETRY_DELAYS):
+                delay = _SUBMIT_RETRY_DELAYS[attempt]
+                logger.warning(f"{last_error} — retrying in {delay}s ({attempt + 1}/{len(_SUBMIT_RETRY_DELAYS)})")
+                await asyncio.sleep(delay)
+        raise last_error
+
+    async def _poll(
+        self, session: aiohttp.ClientSession, pred_id: str, model: str,
+        timeout: int = _POLL_TIMEOUT_VIDEO,
+    ) -> str:
         """Poll Atlas until the prediction completes. Returns the first output URL."""
         poll_url = f"{_BASE_URL}/model/prediction/{pred_id}"
         elapsed = 0
         consecutive_errors = 0
-        while elapsed < _POLL_TIMEOUT:
-            await asyncio.sleep(_POLL_INTERVAL)
-            elapsed += _POLL_INTERVAL
+        while elapsed < timeout:
+            interval = _POLL_INTERVAL if elapsed < _POLL_SLOW_AFTER else _POLL_SLOW_INTERVAL
+            await asyncio.sleep(interval)
+            elapsed += interval
 
             try:
                 async with session.get(
@@ -185,7 +232,9 @@ class AtlasClient:
             )
 
         raise Exception(
-            f"Atlas generation timeout after {_POLL_TIMEOUT}s: model={model}"
+            f"Atlas generation timeout after {timeout}s: model={model}. "
+            f"Job {pred_id} may still finish on Atlas and be charged — check the "
+            f"Atlas dashboard before generating again."
         )
 
     # ── Job tracking (restart recovery, see migrations/009_jobs.sql) ───────

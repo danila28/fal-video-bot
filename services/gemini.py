@@ -35,7 +35,11 @@ class GeminiService:
             {"name": "google/nano-banana-pro/text-to-image", "price": "🏆 Nano Banana Pro · 1K/2K/4K"},
             {"separator": True, "label": "── Gemini Developer API ──"},
             {"name": "gemini-3.1-flash-image", "price": "🏆 Nano Banana Flash · best quality"},
-            {"name": "gemini-3-pro-image",     "price": "⚡ Nano Banana Pro · fast"},
+            # !!! TEMPORARILY HIDDEN FOR TESTING - DO NOT DELETE THIS ENTRY !!!
+            # Hidden only by the "hidden" flag (the menu skips it); remove the flag to
+            # restore it. ImageGenService maps a saved choice to its replacement while
+            # hidden. (Reason: free Google tier, quota 0 for this model.)
+            {"name": "gemini-3-pro-image",     "price": "⚡ Nano Banana Pro · fast", "hidden": True},
         ]
 
     def get_video_models(self):
