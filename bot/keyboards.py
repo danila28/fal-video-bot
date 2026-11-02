@@ -296,6 +296,7 @@ def get_advanced_settings_keyboard(
     video_resolution: str = "720p",
     image_count: int = 1,
     voiceover_on: bool = True,
+    keyframe_photos: int = 1,
 ):
     """Advanced settings sub-page — toggles, quality, publishing."""
     subs_label  = "🔤 Subtitles: ON"  if subtitles_default_on else "🔤 Subtitles: OFF"
@@ -305,6 +306,7 @@ def get_advanced_settings_keyboard(
     spd_label   = f"⚡ {video_speed:g}×" if video_speed != 1.0 else "⚡ Speed: normal"
     tz_sign     = "+" if utc_offset >= 0 else ""
     img_label   = f"🖼 {image_count} photo{'s' if image_count > 1 else ''}"
+    kf_label    = "🎞 Keyframes: off" if keyframe_photos <= 1 else f"🎞 Keyframes: {keyframe_photos} photos"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -327,6 +329,9 @@ def get_advanced_settings_keyboard(
                 InlineKeyboardButton(text=img_label, callback_data="settings:image_count"),
             ],
             [
+                InlineKeyboardButton(text=kf_label, callback_data="settings:keyframes"),
+            ],
+            [
                 InlineKeyboardButton(text="🚫 Negative prompt", callback_data="settings:negative_prompt"),
                 InlineKeyboardButton(text="🎙 Voice",            callback_data="settings:voice_id"),
             ],
@@ -343,6 +348,24 @@ def get_advanced_settings_keyboard(
             ],
         ]
     )
+
+
+def get_keyframes_keyboard(current: int = 1):
+    """Keyframes submenu: how many of the user's own photos are used in order."""
+    options = [
+        (1, "Off — one start photo (classic)"),
+        (2, "2 photos → 1 clip"),
+        (3, "3 photos → 2 clips"),
+        (4, "4 photos → 3 clips"),
+    ]
+    rows = []
+    for val, desc in options:
+        mark = "✅ " if val == current else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{desc}", callback_data=f"settings:keyframes:{val}"
+        )])
+    rows.append([InlineKeyboardButton(text="← Back", callback_data="settings:advanced")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_image_count_keyboard(current: int = 1):

@@ -80,26 +80,36 @@ def build_request_body(
     image_urls: list[str],
     resolution: str = "720p",
     sound: bool = False,
+    end_image_url: str = "",
 ) -> dict:
-    """Body for one clip. Only fields documented for each endpoint are sent."""
+    """Body for one clip. Only fields documented for each endpoint are sent.
+
+    `end_image_url` is the last frame (keyframes mode): Kling 3.0 Std takes it as
+    `last_image_url`, MiniMax H3 as `end_image_url`. The reference model has no
+    end-frame field, so asking for one is an error rather than a silent no-op."""
     spec = HF_MODELS.get(model_key)
     if spec is None:
         raise HiggsfieldError(f"Unknown Higgsfield model: {model_key}")
     if not image_urls:
         raise HiggsfieldError(f"{spec.label} needs at least one public image URL")
+    if end_image_url and spec.reference:
+        raise HiggsfieldError(f"{spec.label} does not support an end frame")
 
     duration = max(spec.min_dur, min(spec.max_dur, int(duration)))
     prompt = (prompt or "").strip() or "Smooth cinematic motion."
 
     if model_key == "higgsfield_kling_std":
-        return {
+        body = {
             "prompt": prompt[:_KLING_MAX_PROMPT_CHARS],
             "image_url": image_urls[0],
             "duration": duration,
             "sound": "on" if sound else "off",
         }
+        if end_image_url:
+            body["last_image_url"] = end_image_url
+        return body
     if model_key == "higgsfield_minimax_h3":
-        return {
+        body = {
             "prompt": prompt,
             "image_url": image_urls[0],
             "duration": duration,
@@ -107,6 +117,9 @@ def build_request_body(
             "aspect_ratio": "9:16",
             "aigc_watermark": False,
         }
+        if end_image_url:
+            body["end_image_url"] = end_image_url
+        return body
     # higgsfield_seedance_ref
     if resolution not in _SEEDANCE_RESOLUTIONS:
         resolution = "720p"
@@ -155,12 +168,14 @@ class HiggsfieldService:
         image_urls: list[str],
         resolution: str = "720p",
         sound: bool = False,
+        end_image_url: str = "",
     ) -> str:
         """Submit one clip, wait for it, download it. Returns the local mp4 path."""
         spec = HF_MODELS[model_key]
         body = build_request_body(
             model_key, prompt=prompt, duration=duration,
             image_urls=image_urls, resolution=resolution, sound=sound,
+            end_image_url=end_image_url,
         )
         async with aiohttp.ClientSession() as session:
             submitted = await self._submit(session, spec.endpoint, body)

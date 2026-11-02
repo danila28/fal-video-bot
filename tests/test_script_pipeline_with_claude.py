@@ -82,3 +82,40 @@ def test_bad_claude_output_keeps_the_argon_draft(monkeypatch):
     out = _build(monkeypatch, router, claude_enrichment=True)
     assert json.loads(out)["spoken_text"] == "plain hook"
     assert claude.calls == 1
+
+
+# ── keyframes mode: the pass is judged against the real length ─────────────
+
+def _keyframe_script(durations, spoken):
+    return json.dumps({
+        "spoken_text": spoken, "caption": "#x",
+        "shots": [{"index": i, "duration_seconds": d, "scene_prompt": f"move {i}",
+                   "camera_motion": "static", "transition": "cut"} for i, d in enumerate(durations)],
+    })
+
+
+def test_claude_pass_accepts_the_keyframes_length_not_the_setting(monkeypatch):
+    # 5 s setting, 3 photos on Atlas Kling: two 5 s clips = 10 s in total.
+    claude = FakeClaude(_keyframe_script([5, 5], "sharper"))
+    router = FakeRouter(_keyframe_script([5, 5], "plain"), claude)
+    monkeypatch.setitem(container.container, LLMService, router)
+    monkeypatch.setitem(container.container, DBService, FakeDB())
+    out = asyncio.run(common._build_video_prompt(
+        "idea", {"video_model": "kling", "target_duration": 5, "claude_enrichment": True, "text_model": "gemini-3.5-flash"},
+        router, own_photo_paths=["a", "b", "c"], keyframes=True,
+    ))
+    assert json.loads(out)["spoken_text"] == "sharper"      # accepted: 10 s matches the 2 planned clips
+    assert claude.calls == 1
+
+
+def test_classic_mode_still_judges_against_the_setting(monkeypatch):
+    # same 10 s reply, but a classic 5 s request: the length is off by 5 s -> draft kept
+    claude = FakeClaude(_keyframe_script([5, 5], "sharper"))
+    router = FakeRouter(_keyframe_script([5], "plain"), claude)
+    monkeypatch.setitem(container.container, LLMService, router)
+    monkeypatch.setitem(container.container, DBService, FakeDB())
+    out = asyncio.run(common._build_video_prompt(
+        "idea", {"video_model": "kling", "target_duration": 5, "claude_enrichment": True, "text_model": "gemini-3.5-flash"},
+        router, own_photo_paths=["a"], keyframes=False,
+    ))
+    assert json.loads(out)["spoken_text"] == "plain"

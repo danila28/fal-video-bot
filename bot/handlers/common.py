@@ -14,6 +14,12 @@ from services.db import DBService
 from services.elevenlabs import ElevenLabsService
 from services.gemini import GeminiService
 from services.imagegen import ImageGenService
+from services.keyframes import (
+    KEYFRAME_MODELS,
+    plan_keyframe_durations,
+    supports_keyframes,
+    unsupported_message,
+)
 from services.kling import KlingService
 from services.llm import LLMService
 from services.pricing import format_video_cost_line
@@ -217,8 +223,13 @@ async def generate_video_for_model(
     image_paths: list[str] | None,
     notify,
     script_json: str = "",
+    keyframes: bool = False,
 ) -> dict:
     """Route to the correct generation function based on `settings['video_model']`.
+
+    keyframes=True: the photos in `image_paths` are ordered keyframes, one clip is
+    made between each pair (see services/keyframes.py). Off by default, so the
+    classic single-start-photo flow below is untouched.
 
     Returns dict with:
       - raw_video_path: path to the unprocessed mp4
@@ -234,6 +245,18 @@ async def generate_video_for_model(
         parsed = GeminiService.parse_script_json(script_json)
         if parsed is not None:
             shots = parsed.get("shots") or None
+
+    if keyframes and len(image_paths or []) >= 2:
+        if not supports_keyframes(model):
+            # The photos were collected for keyframes mode but the model was changed
+            # afterwards. Stop before any paid call instead of rendering one clip
+            # from the first photo and discarding the rest.
+            raise RuntimeError(unsupported_message())
+        return await _generate_keyframes(
+            gemini=gemini, settings=settings,
+            video_prompt=video_prompt, voiceover_text=voiceover_text,
+            image_paths=image_paths, notify=notify, shots=shots,
+        )
 
     # Safety net: LLM-produced shot durations may not sum to the requested
     # target — renormalize in code so the video length matches the setting.
@@ -931,6 +954,128 @@ async def _generate_kling(
 
 
 
+def _keyframe_scenes(shots: list[dict] | None, video_prompt: str, pairs: int) -> list[str]:
+    """Exactly `pairs` prompts, one per photo pair. Uses the script's shots when
+    their count matches; otherwise splits the scene text (e.g. after a manual
+    edit) and trims or pads so a pair never goes without a prompt."""
+    if shots and len(shots) == pairs:
+        return [_build_shot_prompt(s) for s in shots]
+    scenes = _split_scene_into_shots(video_prompt, pairs) or [video_prompt or ""]
+    if len(scenes) > pairs:
+        scenes = scenes[:pairs - 1] + [" ".join(scenes[pairs - 1:])]
+    while len(scenes) < pairs:
+        scenes.append(scenes[-1])
+    return scenes
+
+
+def _cost_settings(settings: dict, data: dict) -> dict:
+    """Settings as the render will really use them. In keyframes mode the video
+    length is the sum of the planned clips (e.g. 2 clips x 5 s), not the
+    target_duration setting, and the cost line must show that."""
+    if data.get("keyframes_mode") and data.get("photo_source") == "own":
+        try:
+            durations = plan_keyframe_durations(
+                settings.get("video_model") or "",
+                float(settings.get("target_duration", DEFAULT_TARGET_DURATION)),
+                len(data.get("image_paths") or []),
+            )
+        except ValueError:
+            return settings
+        return {**settings, "target_duration": sum(durations)}
+    return settings
+
+
+async def _generate_keyframes(
+    *,
+    gemini: GeminiService,
+    settings: dict,
+    video_prompt: str,
+    voiceover_text: str,
+    image_paths: list[str] | None,
+    notify,
+    shots: list[dict] | None = None,
+) -> dict:
+    """Keyframes mode: N photos -> N-1 clips, clip i going from photo i to photo
+    i+1 (first frame -> last frame). The clips meet on the same photo, so they are
+    joined with plain cuts."""
+    model = (settings.get("video_model") or "").lower()
+    spec = KEYFRAME_MODELS[model]
+
+    paths = list(image_paths or [])
+    valid_paths = [p for p in paths if os.path.exists(p)]
+    if len(valid_paths) != len(paths) or len(valid_paths) < 2:
+        raise RuntimeError(
+            "Keyframes mode needs all of its photos on disk (at least 2). "
+            "Please upload the photos again."
+        )
+
+    pairs = len(valid_paths) - 1
+    durations = plan_keyframe_durations(
+        model, float(settings.get("target_duration", DEFAULT_TARGET_DURATION)), len(valid_paths),
+    )
+    scenes = _keyframe_scenes(shots, video_prompt, pairs)
+
+    # Both providers need public URLs; the Atlas upload provides them (as for Kling).
+    kling = container.inject(KlingService)
+    urls = list(await asyncio.gather(*[kling.upload_photo(p) for p in valid_paths]))
+
+    use_sound = False
+    if spec.provider == "atlas":
+        from services.kling import MODEL_IDS as _KLING_IDS
+        atlas_model_id = _KLING_IDS[model]
+    else:
+        from services.higgsfield import HF_MODELS, HiggsfieldService
+        try:
+            hf = container.inject(HiggsfieldService)
+        except KeyError:
+            raise RuntimeError("HIGGSFIELD_API_KEY is not set. Add it to .env or choose another model.")
+        use_sound = HF_MODELS[model].has_audio and (
+            settings.get("content_preset") == "asmr" or not (voiceover_text or "").strip()
+        )
+
+    await notify(
+        f"🎞 Keyframes: {len(valid_paths)} photos → {pairs} clip(s), "
+        f"{sum(durations)}s in total · {spec.label}"
+    )
+    negative_prompt = settings.get("negative_prompt") or ""
+    clips: list[str] = []
+    for i in range(pairs):
+        await notify(f"🎬 Clip {i + 1}/{pairs}: photo {i + 1} → photo {i + 2}…")
+        if spec.provider == "atlas":
+            clip = await kling.generate_clip(
+                prompt=scenes[i],
+                image_url=urls[i],
+                end_image_url=urls[i + 1],
+                duration=durations[i],
+                negative_prompt=negative_prompt,
+                model_id=atlas_model_id,
+            )
+        else:
+            clip = await hf.generate_clip(
+                model,
+                prompt=scenes[i],
+                duration=durations[i],
+                image_urls=[urls[i]],
+                end_image_url=urls[i + 1],
+                sound=use_sound,
+            )
+        clips.append(clip)
+
+    raw_video = (
+        await gemini.concat_videos(clips, crossfade=0) if len(clips) > 1 else clips[0]
+    )
+    await notify(f"✅ {spec.label} keyframe clips ready")
+
+    tts_audio_path, word_timings = await _synthesize_tts(voiceover_text, settings, notify)
+    return {
+        "raw_video_path": raw_video,
+        "tts_audio_path": tts_audio_path,
+        "word_timings": word_timings,
+        "voiceover_text": voiceover_text,
+        "has_native_audio": use_sound,
+    }
+
+
 async def _generate_higgsfield(
     *,
     gemini: GeminiService,
@@ -1308,9 +1453,13 @@ def _validate_final_script(draft_text: str, polished_text: str, target_seconds: 
     return _json.dumps(polished, ensure_ascii=False)
 
 
-async def _final_pass_script(draft_text: str, settings: dict) -> str:
+async def _final_pass_script(draft_text: str, settings: dict, target_seconds: int | None = None) -> str:
     """Claude review of a Gemini script draft. Returns the corrected JSON, or the
-    draft unchanged when Claude is unavailable or the result breaks a hard rule."""
+    draft unchanged when Claude is unavailable or the result breaks a hard rule.
+
+    target_seconds: the length the script really adds up to. Keyframes mode plans its
+    own clip lengths (2 clips x 5 s = 10 s for a 5 s setting), so the setting is not
+    the right yardstick there."""
     if not settings.get("claude_enrichment"):
         return draft_text  # switched off (Settings → ✨ Claude polish); off by default
     if (settings.get("text_model") or "").startswith("claude"):
@@ -1320,7 +1469,7 @@ async def _final_pass_script(draft_text: str, settings: dict) -> str:
     if provider is None:  # ANTHROPIC_API_KEY not set
         return draft_text
 
-    target = int(settings.get("target_duration", DEFAULT_TARGET_DURATION))
+    target = int(target_seconds or settings.get("target_duration", DEFAULT_TARGET_DURATION))
     user_prompt = f"Target total duration: {target} seconds.\n\nDraft JSON:\n{draft_text}"
     try:
         polished_text, usage = await provider.generate_with_usage(
@@ -1361,6 +1510,7 @@ async def _build_video_prompt(
     ref_combination_plan: str = "",
     ref_descriptions: list[str] | None = None,
     own_photo_paths: list[str] | None = None,
+    keyframes: bool = False,
 ) -> str:
     """Generate video script as structured JSON. Falls back to text format on parse failure.
 
@@ -1374,6 +1524,8 @@ async def _build_video_prompt(
     image input (vision) instead of a text description, so shots are grounded
     in what the photo(s) actually show rather than invented from enhance_prompt
     alone. Takes priority over ref_roles/ref_descriptions when set.
+    keyframes: the own photos are ordered keyframes (services/keyframes.py): the
+    script gets exactly one shot per pair of neighbouring photos.
     """
     base_sys = (
         _STRICT_SCRIPT_SYS if strict_script
@@ -1394,7 +1546,13 @@ async def _build_video_prompt(
     # Plan exact per-shot durations that sum to target_duration (fewest clips
     # of length min_dur..max_dur), instead of always rounding up to a multiple
     # of the model's max clip length (e.g. 20s target → [10, 10], not [15, 15]).
-    planned_durations = _plan_clip_durations(target_duration, min_dur, max_dur)
+    keyframe_mode = bool(
+        keyframes and own_photo_paths and len(own_photo_paths) >= 2 and supports_keyframes(video_model)
+    )
+    if keyframe_mode:
+        planned_durations = plan_keyframe_durations(video_model, target_duration, len(own_photo_paths))
+    else:
+        planned_durations = _plan_clip_durations(target_duration, min_dur, max_dur)
     n_clips = len(planned_durations)
     actual_duration = sum(planned_durations)
     target_words = max(20, int(actual_duration * 2.5))
@@ -1412,7 +1570,21 @@ async def _build_video_prompt(
         # (see gemini.generate_text call), not described in text. The model
         # looks at them itself instead of relying on a human-typed description.
         is_ref_model = video_model.endswith("_ref")
-        if is_ref_model and len(own_photo_paths) > 1:
+        if keyframe_mode:
+            n_photos = len(own_photo_paths)
+            ref_images_context = (
+                f"\n\nATTACHED PHOTOS (KEYFRAMES): the {n_photos} images attached to this request "
+                "are the user's own real photos, in order. They are the KEYFRAMES of the video: "
+                "shot 1 starts exactly on photo 1 and ends exactly on photo 2, shot 2 starts on "
+                f"photo 2 and ends on photo 3, and so on ({n_photos - 1} shots in total).\n"
+                "Look at the photos directly. For each shot describe ONLY the motion and action "
+                "that carries the scene from its first photo to its second, with the same subject "
+                "and setting as the photos. Do NOT invent a different person or scene. If two "
+                "neighbouring photos look unrelated, describe a smooth, plausible move between "
+                "them rather than a new scene."
+            )
+            scene_prompt_rule = "scene_prompt: English ONLY, describe how the scene moves from photo N to photo N+1 (action and visuals only, same subject as the photos). Max 55 words per shot"
+        elif is_ref_model and len(own_photo_paths) > 1:
             from utils.presets import get_image_tag_template
             tag_template = get_image_tag_template(video_model)
             tags = ", ".join(tag_template.format(i=i + 1) for i in range(len(own_photo_paths)))
@@ -1502,7 +1674,7 @@ async def _build_video_prompt(
 
     if GeminiService.parse_script_json(raw) is not None:
         # valid JSON ✓ — Claude reviews it when configured; otherwise the draft is returned as-is
-        return await _final_pass_script(raw, settings)
+        return await _final_pass_script(raw, settings, target_seconds=actual_duration if keyframe_mode else None)
 
     logger.warning("LLM returned invalid JSON for video script — falling back to text format")
     return await _build_video_prompt_text(

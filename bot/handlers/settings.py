@@ -20,6 +20,7 @@ from bot.keyboards import (
     get_advanced_settings_keyboard,
     get_duration_keyboard,
     get_image_count_keyboard,
+    get_keyframes_keyboard,
     get_resolution_keyboard,
     get_settings_keyboard,
     get_speed_keyboard,
@@ -33,6 +34,7 @@ from bot.states import GenerationState
 from services.db import DBService
 from services.gemini import GeminiService
 from services.llm import LLMService
+from services.keyframes import keyframes_problem, supported_labels
 from services.pricing import video_provider
 from utils import container
 from utils.config import config
@@ -135,6 +137,7 @@ def _advanced_kb(s: dict):
         video_resolution=s.get("video_resolution", "720p"),
         image_count=int(s.get("image_count", 1)),
         voiceover_on=s.get("voiceover_enabled", True),
+        keyframe_photos=int(s.get("keyframe_photos", 1)),
     )
 
 
@@ -455,6 +458,57 @@ async def settings_image_count_selected(callback: CallbackQuery):
         )
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
+
+
+@router.callback_query(lambda c: c.data == "settings:keyframes", IsAllowed(allowed_users))
+async def settings_keyframes(callback: CallbackQuery):
+    await callback.answer()
+    db = container.inject(DBService)
+    settings = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    current = int(settings.get("keyframe_photos", 1))
+    state_text = "off" if current <= 1 else f"{current} photos"
+    await callback.message.answer(
+        f"🎞 <b>Keyframes</b> — current: <b>{state_text}</b>\n\n"
+        "Use several of your own photos <i>in order</i>: the video starts on photo 1, "
+        "passes through the middle photos and ends on the last one. One clip is made "
+        "between each pair of photos, so 3 photos make 2 clips.\n\n"
+        "Applies when you choose <b>Upload my own photo</b>. <b>Off</b> keeps the classic "
+        "single start photo.\n"
+        f"Works with: {html.escape(supported_labels())}.",
+        parse_mode="HTML",
+        reply_markup=get_keyframes_keyboard(current),
+    )
+    problem = keyframes_problem(settings.get("video_model") or "", current)
+    if problem:
+        await callback.message.answer(problem)
+
+
+@router.callback_query(lambda c: c.data.startswith("settings:keyframes:"), IsAllowed(allowed_users))
+async def settings_keyframes_selected(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        count = int(callback.data.split(":")[-1])
+    except ValueError:
+        count = 0
+    if count not in (1, 2, 3, 4):
+        await callback.message.answer("❌ Invalid value.")
+        return
+    db = container.inject(DBService)
+    saved = (await db.update_settings(
+        callback.from_user.id, callback.message.chat.id, {"keyframe_photos": count}
+    )) or {}
+    try:
+        await callback.message.edit_reply_markup(reply_markup=get_keyframes_keyboard(count))
+    except TelegramBadRequest:
+        pass  # unchanged keyboard
+    if count <= 1:
+        await callback.message.answer("✅ Keyframes <b>off</b>: one start photo, as before.", parse_mode="HTML")
+        return
+    await callback.message.answer(f"✅ Keyframes set to <b>{count} photos</b>.", parse_mode="HTML")
+    # Say it now if the chosen video model cannot use several photos in order.
+    problem = keyframes_problem(saved.get("video_model") or "", count)
+    if problem:
+        await callback.message.answer(problem)
 
 
 @router.callback_query(lambda c: c.data == "settings:timezone", IsAllowed(allowed_users))
@@ -953,10 +1007,18 @@ async def handle_video_model_selected(callback: CallbackQuery):
     await callback.answer()
     try:
         db = container.inject(DBService)
-        await db.update_settings(callback.from_user.id, callback.message.chat.id, {"video_model": model})
+        saved = (await db.update_settings(
+            callback.from_user.id, callback.message.chat.id, {"video_model": model}
+        )) or {}
     except Exception as e:
         await callback.message.answer(f"Error: {html.escape(str(e))}")
         return
+
+    # Several photos are wanted (Settings → Keyframes) but this model cannot use them in
+    # order: say so now, before any photo is uploaded or paid for.
+    problem = keyframes_problem(model, int(saved.get("keyframe_photos", 1)))
+    if problem:
+        await callback.message.answer(problem)
 
     # Stay on the same service list: move the check mark and confirm the choice.
     service = video_provider(model)

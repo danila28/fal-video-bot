@@ -113,8 +113,14 @@ class KlingService:
         aspect_ratio: str = "9:16",
         negative_prompt: str = "",
         model_id: str = _V3_PRO_I2V,
+        end_image_url: str = "",
     ) -> str:
         """Generate one clip. Returns local path to downloaded MP4.
+
+        `end_image_url` (keyframes mode) is sent as Atlas's `end_image`, which the
+        Kling v3 Std/Pro image-to-video models accept. It needs a start image and a
+        regular image-to-video model; anything else raises instead of silently
+        dropping the frame the user paid to have used.
 
         Reference models: pass ALL images via `image_urls` → `images` array
         (negative_prompt unsupported there). Regular I2V: single `image`.
@@ -126,6 +132,8 @@ class KlingService:
 
         # image_urls takes priority over image_url
         effective_urls = image_urls if image_urls else ([image_url] if image_url else [])
+        if end_image_url and (is_reference or not effective_urls):
+            raise ValueError("end_image_url needs a start image on a regular image-to-video model")
 
         if effective_urls:
             model = model_id
@@ -152,6 +160,8 @@ class KlingService:
                 }
                 if negative_prompt:
                     params["negative_prompt"] = negative_prompt
+                if end_image_url:
+                    params["end_image"] = end_image_url
         else:
             model = (
                 model_id if "text-to-video" in model_id
@@ -168,7 +178,7 @@ class KlingService:
 
         logger.info(
             f"Kling generating clip | model={model} | {duration}s"
-            f" | images={len(effective_urls)}"
+            f" | images={len(effective_urls)}" + (" | end_image" if end_image_url else "")
         )
         video_url = await self._atlas.generate_video(model, params)
         return await self._atlas.download(video_url, ext="mp4")

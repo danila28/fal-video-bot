@@ -52,6 +52,7 @@ from bot.handlers.common import (
     _build_image_prompt,
     _build_ref_image_prompts,
     _build_video_prompt,
+    _cost_settings,
     _explain_provider_error,
     _format_video_prompt_message,
     _is_generating,
@@ -62,6 +63,7 @@ from bot.handlers.common import (
     _video_cost_line,
     generate_video_for_model,
 )
+from services.keyframes import keyframes_problem, plan_keyframe_durations, supports_keyframes
 from services.pricing import estimate_video_usd, video_provider
 
 router = Router()
@@ -244,7 +246,7 @@ async def _proceed_to_media(message: Message, state: FSMContext, user_id: int, c
                 video_script_json=video_prompt,
                 cached_hashtags=hashtags,
             )
-            text = _format_video_prompt_message(scene, voiceover, _video_cost_line(settings))
+            text = _format_video_prompt_message(scene, voiceover, _video_cost_line(_cost_settings(settings, data)))
             await send_long_message(
                 message, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML"
             )
@@ -345,6 +347,7 @@ async def handle_photo_source_select(callback: CallbackQuery, state: FSMContext)
         return
 
     # source == "auto" — identical to the previous handle_prompt_ok body
+    await state.update_data(keyframes_mode=False)
     if _is_reference_model(video_model):
         image_count = int(settings.get("image_count", 1))
         if image_count > 1:
@@ -713,13 +716,37 @@ async def _start_own_photo_upload(message: Message, state: FSMContext, settings:
     is_ref = _is_reference_model(video_model)
     target_count = int(settings.get("image_count", 1)) if is_ref else 1
 
+    # Keyframes mode (Settings → Keyframes): several photos used in order, one clip
+    # between each pair. Only models with a confirmed end-frame parameter qualify; with
+    # any other model ONE photo is collected, so nothing is paid for and then ignored.
+    wanted = int(settings.get("keyframe_photos", 1))
+    keyframes_mode = wanted > 1 and supports_keyframes(video_model)
+    intro = ""
+    if keyframes_mode:
+        target_count = wanted
+        intro = (
+            f"🎞 Keyframes mode: send {wanted} photos in the order they should appear "
+            "(first frame → … → last frame). The video moves from each photo to the next.\n\n"
+        )
+    else:
+        problem = keyframes_problem(video_model, wanted)
+        if problem:
+            await message.answer(problem)
+        elif wanted > 1 and is_ref:
+            await message.answer(
+                "ℹ️ Keyframes mode is not used with reference models: "
+                "all photos are used as references for every clip."
+            )
+
     await state.update_data(
         photo_source="own",
         own_photo_paths=[],
         own_photo_target_count=target_count,
+        keyframes_mode=keyframes_mode,
     )
     await message.answer(
         _OWN_PHOTO_DISCLAIMER
+        + intro
         + f"📷 Send photo 1 of {target_count} as a FILE (not a gallery photo — "
         "Telegram compresses those and details get lost)."
     )
@@ -743,9 +770,27 @@ async def _finish_or_continue_own_photos(message: Message, state: FSMContext) ->
         image_prompt="",
         photo_source="own",
     )
-    captions = [f"Photo {i + 1}/{len(paths)}" for i in range(len(paths))] if len(paths) > 1 else None
+    label = "Keyframe" if data.get("keyframes_mode") else "Photo"
+    captions = [f"{label} {i + 1}/{len(paths)}" for i in range(len(paths))] if len(paths) > 1 else None
     await _send_image_preview(message, paths, captions=captions)
-    await message.answer("Photo(s) received.\nContinue?", reply_markup=get_image_keyboard())
+
+    summary = ""
+    if data.get("keyframes_mode"):
+        db = container.inject(DBService)
+        settings = await db.get_settings(message.from_user.id, message.chat.id)
+        try:
+            durations = plan_keyframe_durations(
+                settings.get("video_model") or "",
+                float(settings.get("target_duration", DEFAULT_TARGET_DURATION)),
+                len(paths),
+            )
+            summary = (
+                f"🎞 {len(paths)} photos → {len(durations)} clip(s) of {durations[0]}s "
+                f"({sum(durations)}s in total).\n"
+            )
+        except ValueError:
+            pass  # model changed meanwhile; the render step reports it
+    await message.answer(f"Photo(s) received.\n{summary}Continue?", reply_markup=get_image_keyboard())
     await state.set_state(GenerationState.CONFIRM_IMAGE)
 
 
@@ -961,6 +1006,7 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
             _build_video_prompt(
                 enhance_prompt, settings, llm, ref_roles=ref_roles, ref_combination_plan=ref_plan,
                 ref_descriptions=ref_descriptions, own_photo_paths=own_photo_paths,
+                keyframes=bool(data.get("keyframes_mode")),
             ),
             llm.generate_text(enhance_prompt, generate_hashtags_prompt, text_model),
         )
@@ -976,7 +1022,7 @@ async def handle_image_ok(callback: CallbackQuery, state: FSMContext):
             cached_hashtags=hashtags,
         )
 
-        text = _format_video_prompt_message(scene, voiceover, _video_cost_line(settings))
+        text = _format_video_prompt_message(scene, voiceover, _video_cost_line(_cost_settings(settings, data)))
         await send_long_message(
             callback.message, text, keyboard=get_video_prompt_keyboard(), parse_mode="HTML"
         )
@@ -1037,11 +1083,12 @@ async def handle_vp_scene_regen(callback: CallbackQuery, state: FSMContext):
             strict_script=bool(data.get("own_script")),
             ref_roles=ref_roles, ref_combination_plan=ref_plan, ref_descriptions=ref_descriptions,
             own_photo_paths=own_photo_paths,
+            keyframes=bool(data.get("keyframes_mode")),
         )
         new_scene, _ = _split_video_prompt(video_prompt, gemini)
         voiceover = data.get("video_voiceover", "")
         await state.update_data(video_scene=new_scene, video_script_json=video_prompt)
-        await _show_video_prompt(callback.message, new_scene, voiceover, settings)
+        await _show_video_prompt(callback.message, new_scene, voiceover, _cost_settings(settings, data))
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
@@ -1071,11 +1118,12 @@ async def handle_vp_vo_regen(callback: CallbackQuery, state: FSMContext):
             strict_script=bool(data.get("own_script")),
             ref_roles=ref_roles, ref_combination_plan=ref_plan, ref_descriptions=ref_descriptions,
             own_photo_paths=own_photo_paths,
+            keyframes=bool(data.get("keyframes_mode")),
         )
         _, new_voiceover = _split_video_prompt(video_prompt, gemini)
         scene = data.get("video_scene", "")
         await state.update_data(video_voiceover=new_voiceover, video_script_json=video_prompt)
-        await _show_video_prompt(callback.message, scene, new_voiceover, settings)
+        await _show_video_prompt(callback.message, scene, new_voiceover, _cost_settings(settings, data))
     except Exception as e:
         await callback.message.answer(f"❌ Error: {e}")
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
@@ -1104,7 +1152,7 @@ async def handle_edit_scene_input(message: Message, state: FSMContext):
     await state.update_data(video_scene=message.text, video_script_json=None)
     db = container.inject(DBService)
     settings = await db.get_settings(message.from_user.id, message.chat.id)
-    await _show_video_prompt(message, message.text, data.get("video_voiceover", ""), settings)
+    await _show_video_prompt(message, message.text, data.get("video_voiceover", ""), _cost_settings(settings, data))
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
 
 
@@ -1131,7 +1179,7 @@ async def handle_edit_voiceover_input(message: Message, state: FSMContext):
     await state.update_data(video_voiceover=message.text)
     db = container.inject(DBService)
     settings = await db.get_settings(message.from_user.id, message.chat.id)
-    await _show_video_prompt(message, data.get("video_scene", ""), message.text, settings)
+    await _show_video_prompt(message, data.get("video_scene", ""), message.text, _cost_settings(settings, data))
     await state.set_state(GenerationState.CONFIRM_VIDEO_PROMPT)
 
 
@@ -1186,6 +1234,7 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             image_paths=image_paths,
             notify=callback.message.answer,
             script_json=data.get("video_script_json") or "",
+            keyframes=bool(data.get("keyframes_mode")) and data.get("photo_source") == "own",
         )
 
         subs_default = settings.get("subtitles_enabled", True)
@@ -1226,7 +1275,9 @@ async def _run_video_gen(callback: CallbackQuery, state: FSMContext, gen_type: s
             target_duration=settings.get("target_duration", DEFAULT_TARGET_DURATION),
         )
         video_model = settings.get("video_model") or ""
-        video_seconds = float(settings.get("target_duration", DEFAULT_TARGET_DURATION))
+        video_seconds = float(
+            _cost_settings(settings, data).get("target_duration", DEFAULT_TARGET_DURATION)
+        )
         await db.log_cost(
             chat_id=chat_id, user_id=user_id,
             provider=video_provider(video_model), model=video_model, kind="video",
