@@ -135,6 +135,41 @@ def get_publish_keyboard():
     )
 
 
+TEXT_SERVICE_TITLES = {
+    "gemini": "🔷 Google Gemini",
+    "openai": "🟢 OpenAI",
+}
+
+
+def get_text_service_keyboard(current_service: str, counts: dict[str, int]):
+    """Level 1 of the text-model menu: one row per known service. A service with no
+    models (its API key is not set) is shown as an inert row."""
+    rows = []
+    for key, title in TEXT_SERVICE_TITLES.items():
+        count = counts.get(key, 0)
+        if not count:
+            rows.append([InlineKeyboardButton(text=f"{title} · not configured", callback_data="noop")])
+            continue
+        mark = "✅ " if key == current_service else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{title} · {count} models", callback_data=f"tsvc:{key}",
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_text_models_keyboard(entries: list[dict], current_model: str):
+    """Level 2: the models of one service, the current one marked."""
+    rows = []
+    for entry in entries:
+        mark = "✅ " if entry["name"] == current_model else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{entry['name']}  |  {entry['price']}",
+            callback_data=f"text-model:{entry['name']}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Back to services", callback_data="tsvc:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 VIDEO_SERVICE_TITLES = {
     "atlas": "☁️ Atlas Cloud",
     "higgsfield": "🟣 Higgsfield",

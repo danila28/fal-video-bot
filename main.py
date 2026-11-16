@@ -69,7 +69,10 @@ async def main():
     if config.get("ANTHROPIC_API_KEY"):
         llm_providers.append(AnthropicTextProvider(api_key=config["ANTHROPIC_API_KEY"]))
 
-    container.instance(LLMService(providers=llm_providers, default_model="terra"))
+    # Default for users who never picked a text model, and the fallback for an unknown
+    # saved one. It was "terra", which does not exist at OpenAI (404). If the Gemini key
+    # is absent LLMService falls back to the first model of the first provider.
+    container.instance(LLMService(providers=llm_providers, default_model="gemini-4-hydrogen"))
 
     # GeminiService still needed for image generation and ffmpeg utilities
     # (only generate_text and get_text_models were moved to LLMService)

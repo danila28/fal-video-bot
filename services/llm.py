@@ -241,9 +241,14 @@ class GeminiTextProvider:
         # (Reason: this key is on the free Google tier, where the model has quota 0.)
         {"name": "gemini-3.1-pro-preview", "price": "🏆 ~$1.25/1M tok", "vision": True,
          "hidden": True, "replacement": "gemini-3.5-flash"},
-        # Listed by the Gemini API for our key. Needs a paid Google tier (free-tier
-        # quota is 0). Price unknown; vision support not yet verified.
-        {"name": "gemini-4-argon", "price": "🧪 new · paid Google tier · price unverified", "vision": True},
+        # Listed by the Gemini API for our key. It answered once the key's project had
+        # quota (it returned quota 0 on the free tier). Slower than hydrogen (~9 s for a
+        # short prompt in our test). Price unknown; vision support not yet verified.
+        {"name": "gemini-4-argon", "price": "🧪 new · price unverified", "vision": True},
+        # Listed by the Gemini API for our key (1M tokens in, 64k out). Measured on our
+        # server: median 3.3 s for a short prompt, the fastest model tested (3.6-flash 4.3 s,
+        # argon 8.9 s). Strict JSON, Russian text and image input all worked. Price unknown.
+        {"name": "gemini-4-hydrogen", "price": "🚀 new · fast · price unverified", "vision": True},
     ]
 
     _IMAGE_MIME_BY_EXT = {
@@ -459,16 +464,22 @@ class LLMService:
     # Names that were saved in user settings under an id the API does not accept.
     _MODEL_ALIASES = {"gemini-3.1-pro": "gemini-3.1-pro-preview"}
 
-    def get_text_models(self) -> list[dict]:
-        """Menu entries from every provider that wants to be listed (Claude, which
-        is used only for the final script review, is not)."""
-        models = []
-        for provider in self.providers_map.values():
+    def get_text_models_by_provider(self) -> dict[str, list[dict]]:
+        """Menu entries grouped by provider name, in provider order. Claude (used only
+        for the final script review) and entries flagged "hidden" are left out, and so
+        is any provider that ends up with nothing to offer."""
+        menu: dict[str, list[dict]] = {}
+        for name, provider in self.providers_map.items():
             if getattr(provider, "in_menu", True) is False:
                 continue
-            # entries flagged "hidden" stay in the catalogue but are not offered
-            models.extend(m for m in provider.catalog() if not m.get("hidden"))
-        return models
+            entries = [m for m in provider.catalog() if not m.get("hidden")]
+            if entries:
+                menu[name] = entries
+        return menu
+
+    def get_text_models(self) -> list[dict]:
+        """Flat list of every model the menu offers."""
+        return [m for entries in self.get_text_models_by_provider().values() for m in entries]
 
     def _find_model(self, model: str) -> tuple[str, str] | None:
         for provider in self.providers_map.values():

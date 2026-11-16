@@ -15,6 +15,7 @@ from aiogram.types import (
 )
 from bot.guard import IsAllowed
 from bot.keyboards import (
+    TEXT_SERVICE_TITLES,
     VIDEO_SERVICE_TITLES,
     get_accounts_keyboard,
     get_advanced_settings_keyboard,
@@ -25,6 +26,8 @@ from bot.keyboards import (
     get_settings_keyboard,
     get_speed_keyboard,
     get_style_keyboard,
+    get_text_models_keyboard,
+    get_text_service_keyboard,
     get_video_models_keyboard,
     get_video_service_keyboard,
     SETTINGS_BUTTON_TEXT,
@@ -527,20 +530,69 @@ async def settings_timezone(callback: CallbackQuery, state: FSMContext):
     await state.set_state(GenerationState.SET_UTC_OFFSET)
 
 
+def _text_model_line(saved: str) -> str:
+    """'gemini-4-hydrogen · 🔷 Google Gemini' for the model that will really be used.
+    A saved name that is no longer offered is shown together with what replaces it."""
+    provider, resolved = container.inject(LLMService)._resolve_model(saved)
+    service = TEXT_SERVICE_TITLES.get(provider, provider)
+    line = f"<b>{html.escape(resolved)}</b> · {service}"
+    if saved and saved != resolved:
+        line += f"\n<i>(saved \"{html.escape(saved)}\" is not available, this one is used instead)</i>"
+    return line
+
+
+async def _show_text_services(callback: CallbackQuery, s: dict, edit: bool = False):
+    saved = s.get("text_model") or ""
+    menu = container.inject(LLMService).get_text_models_by_provider()
+    provider, _ = container.inject(LLMService)._resolve_model(saved)
+    text = (
+        "🧠 <b>Text model</b>\n"
+        f"Current: {_text_model_line(saved)}\n\n"
+        "Choose a service:"
+    )
+    keyboard = get_text_service_keyboard(provider, {k: len(v) for k, v in menu.items()})
+    if edit:
+        await _edit_or_send(callback, text, keyboard)
+    else:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+
 @router.callback_query(lambda c: c.data == "settings:text_model", IsAllowed(allowed_users))
 async def settings_text_model(callback: CallbackQuery):
     await callback.answer()
-    llm = container.inject(LLMService)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text=f"{m['name']}  |  {m['price']}",
-                callback_data=f"text-model:{m['name']}",
-            )]
-            for m in llm.get_text_models()
-        ]
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    await _show_text_services(callback, s, edit=False)
+
+
+@router.callback_query(lambda c: c.data == "tsvc:back", IsAllowed(allowed_users))
+async def settings_text_back(callback: CallbackQuery):
+    await callback.answer()
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    await _show_text_services(callback, s, edit=True)
+
+
+@router.callback_query(
+    lambda c: c.data.startswith("tsvc:") and c.data != "tsvc:back", IsAllowed(allowed_users),
+)
+async def settings_text_service(callback: CallbackQuery):
+    service = callback.data.split(":", 1)[1]
+    menu = container.inject(LLMService).get_text_models_by_provider()
+    if service not in menu:
+        await callback.answer("This service is not configured.", show_alert=True)
+        return
+    await callback.answer()
+    db = container.inject(DBService)
+    s = await db.get_settings(callback.from_user.id, callback.message.chat.id)
+    saved = s.get("text_model") or ""
+    _, resolved = container.inject(LLMService)._resolve_model(saved)
+    text = (
+        f"{TEXT_SERVICE_TITLES.get(service, service)}\n"
+        f"Current: {_text_model_line(saved)}\n\n"
+        "Pick a model:"
     )
-    await callback.message.answer("Choose text model:", reply_markup=keyboard)
+    await _edit_or_send(callback, text, get_text_models_keyboard(menu[service], resolved))
 
 
 @router.callback_query(lambda c: c.data == "settings:image_model", IsAllowed(allowed_users))
@@ -952,23 +1004,28 @@ async def settings_negative_prompt(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(lambda c: c.data.startswith("text-model:"), IsAllowed(allowed_users))
 async def handle_text_model_selected(callback: CallbackQuery):
+    model = callback.data.split(":", 1)[1]
+    menu = container.inject(LLMService).get_text_models_by_provider()
+    # Validate against what the menu offers; also covers an old flat keyboard that is
+    # still on screen from before the model was hidden or removed.
+    service = next((name for name, entries in menu.items() if any(m["name"] == model for m in entries)), None)
+    if service is None:
+        await callback.answer(f"Model {model} is no longer available.", show_alert=True)
+        return
     await callback.answer()
-    await callback.message.edit_reply_markup(reply_markup=None)
     try:
-        llm = container.inject(LLMService)
         db = container.inject(DBService)
-        model = callback.data.split(":", 1)[1]
-
-        # Validate that model exists in available list
-        available_models = {m["name"] for m in llm.get_text_models()}
-        if model not in available_models:
-            await callback.message.answer(f"❌ Model '{model}' is no longer available.")
-            return
-
         await db.update_settings(callback.from_user.id, callback.message.chat.id, {"text_model": model})
-        await callback.message.answer(f"✅ Text model: {model}")
     except Exception as e:
-        await callback.message.answer(f"Error: {str(e)}")
+        await callback.message.answer(f"Error: {html.escape(str(e))}")
+        return
+
+    # Stay on the service list: move the check mark and confirm the choice.
+    text = (
+        f"{TEXT_SERVICE_TITLES.get(service, service)}\n"
+        f"✅ Selected: {_text_model_line(model)}"
+    )
+    await _edit_or_send(callback, text, get_text_models_keyboard(menu[service], model))
 
 
 @router.callback_query(lambda c: c.data.startswith("image-model:"), IsAllowed(allowed_users))
